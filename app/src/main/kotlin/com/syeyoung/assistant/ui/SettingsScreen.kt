@@ -52,6 +52,7 @@ fun SettingsScreen() {
     var notificationsAllowed by remember {
         mutableStateOf(Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
     }
+    val bridgeCrashed = remember { com.syeyoung.assistant.data.Crashes.takeBridgeCrashed(context) }
     val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { notificationsAllowed = it }
 
     Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -75,6 +76,7 @@ fun SettingsScreen() {
             }
             Switch(embedded, { embedded = it; repo.settings.useEmbeddedTailscale = it; scope.launch { repo.refresh() } })
         }
+        if (bridgeCrashed) Text("Built-in Tailscale crashed the app last time and was turned off. The crash report goes to the server on the next sync.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         if (embedded) TailscaleStatus()
 
         HorizontalDivider()

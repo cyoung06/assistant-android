@@ -13,11 +13,13 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"tailscale.com/envknob"
 	"tailscale.com/net/netmon"
 	"tailscale.com/tsnet"
 )
@@ -76,12 +78,26 @@ func SetInterfaces(desc string) {
 	ifaceMu.Unlock()
 }
 
+// SetEnv sets an environment variable as Go sees it. Go in an Android library doesn't see the
+// process environment, so HOME, TS_LOGS_DIR and the like are passed in this way.
+func SetEnv(key, value string) error { return os.Setenv(key, value) }
+
+// SetCrashFile makes a Go crash write its report to path, which the app uploads on its next start.
+func SetCrashFile(path string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	return debug.SetCrashOutput(f, debug.CrashOptions{})
+}
+
 // Start joins the tailnet as hostname (state kept in dir) and serves a proxy to target on a local
 // port. Requests must carry the header X-Bridge-Token: token, so other apps can't use it.
 // authKey may be empty; then the node waits for an interactive login (see AuthURL).
 func Start(dir, hostname, authKey, target, token string) (*Bridge, error) {
-	// No log uploads to Tailscale from this embedded node.
-	os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
+	// No log uploads to Tailscale from this embedded node (the app passes HOME and TS_LOGS_DIR
+	// through SetEnv, since Android apps have no home directory).
+	envknob.SetNoLogsNoSupport()
 	u, err := url.Parse(target)
 	if err != nil {
 		return nil, err

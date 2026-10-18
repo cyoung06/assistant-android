@@ -39,11 +39,18 @@ class TailscaleBridge private constructor(private val context: Context) {
     suspend fun start(serverUrl: String): Bridge = lock.withLock {
         bridge?.let { return it }
         withContext(Dispatchers.IO) {
+            prepareEnvironment(context)
             updateInterfaces()
             watchNetwork()
             val dir = File(context.filesDir, "tailscale").apply { mkdirs() }
             val settings = Settings(context)
-            Tsbridge.start(dir.path, "assistant-android", settings.tailscaleAuthKey, serverUrl, token)
+            // If the process dies in here, the next launch turns built-in Tailscale off (see Crashes).
+            Crashes.markBridgeStarting(context, true)
+            try {
+                Tsbridge.start(dir.path, "assistant-android", settings.tailscaleAuthKey, serverUrl, token)
+            } finally {
+                Crashes.markBridgeStarting(context, false)
+            }
         }.also { bridge = it }
     }
 
@@ -79,6 +86,25 @@ class TailscaleBridge private constructor(private val context: Context) {
     }
 
     companion object {
+        private var prepared = false
+
+        /**
+         * Tailscale expects a home directory and a place for its log state, which Android apps
+         * don't have. Go in an Android library doesn't see the process environment, so they're set
+         * through the bridge.
+         */
+        @Synchronized
+        fun prepareEnvironment(context: Context) {
+            if (prepared) return
+            val home = File(context.filesDir, "tailscale-home").apply { mkdirs() }
+            for ((k, v) in listOf(
+                "HOME" to home.path, "XDG_CACHE_HOME" to File(context.cacheDir, "tailscale").apply { mkdirs() }.path,
+                "XDG_CONFIG_HOME" to home.path, "TMPDIR" to context.cacheDir.path, "TS_NO_LOGS_NO_SUPPORT" to "true", "TS_LOGS_DIR" to home.path,
+            )) Tsbridge.setEnv(k, v)
+            Tsbridge.setCrashFile(Crashes.file(context).path)
+            prepared = true
+        }
+
         @Volatile private var instance: TailscaleBridge? = null
         fun get(context: Context) = instance ?: synchronized(this) { instance ?: TailscaleBridge(context.applicationContext).also { instance = it } }
     }
