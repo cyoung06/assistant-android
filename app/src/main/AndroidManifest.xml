@@ -11,7 +11,8 @@
         android:label="Assistant"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.Assistant">
+        android:theme="@style/Theme.Assistant"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name=".MainActivity"
