@@ -117,8 +117,6 @@ class NotebookActivity : ComponentActivity() {
                 ui.bookmarks = opened.bookmarks
                 view.setDocument(sizes, opened.strokes)
                 // Diagnostics (adb only): open at a given zoom.
-                view.sharpEnabled = intent.getBooleanExtra("sharp", true)
-                view.sharpDelay = intent.getLongExtra("sharpDelay", 140L)
                 intent.getFloatExtra("zoom", 0f).takeIf { it > 0f }?.let { z -> view.post { view.zoomForTest(z) } }
                 // Diagnostics (adb only): zoom slowly, as a long pinch would.
                 intent.getFloatExtra("zoomTo", 0f).takeIf { it > 0f }?.let { z ->

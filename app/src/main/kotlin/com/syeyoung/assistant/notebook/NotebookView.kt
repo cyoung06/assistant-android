@@ -26,6 +26,11 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+private const val TILE = 512
+private const val MAX_LEVEL = 3
+/** About 160 MB of 512×512 tiles. */
+private const val MAX_TILES = 160
+
 /** How fingers move through pages. */
 enum class ScrollMode { PAGED, CONTINUOUS }
 
@@ -255,7 +260,6 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             }
         }
         if (before != currentPage) onPageChanged(currentPage, pageCount)
-        scheduleSharp()
         invalidate()
     }
 
@@ -270,34 +274,53 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private val hitPaint = Paint().apply { color = 0x55FFD600 }
     private val focusPaint = Paint().apply { color = 0x99FF9800.toInt() }
 
-    /** Each page once, at the size it has on screen at zoom 1. */
-    private val pageBitmaps = HashMap<Int, Bitmap>()
-    private val pending = HashSet<Int>()
-    /** The visible part of a page, rendered sharp at the current zoom. */
-    private class Sharp(val page: Int, val bitmap: Bitmap, val zoom: Float, val left: Float, val top: Float, val scrollX: Float, val scrollY: Float)
-    private val sharp = HashMap<Int, Sharp>()
-    private val sharpRect = RectF()
+    /*
+     * Page images are tiles, as map apps and PDF viewers do it: each page is cut into 512px squares
+     * rendered at a zoom level (1×, 2×, 4×, 8× of the fitted page; the level just above the current
+     * zoom, so tiles are at least as sharp as the screen). Only tiles on screen are rendered, nearest
+     * the middle first, several at once; they're kept (about 160 MB) so scrolling back is instant.
+     * Coarser tiles (and the whole page at 1×) are drawn under finer ones, so something is always there.
+     */
+    private data class TileKey(val page: Int, val level: Int, val tx: Int, val ty: Int)
+
+    private val tiles = object : LinkedHashMap<TileKey, Bitmap>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TileKey, Bitmap>): Boolean {
+            if (size <= MAX_TILES) return false
+            eldest.value.recycle()
+            return true
+        }
+    }
+    private val pendingTiles = HashSet<TileKey>()
+    /** The tiles the screen needs now; a queued tile not in here is skipped. */
+    @Volatile private var wanted: Set<TileKey> = emptySet()
+    private val tileSrc = android.graphics.Rect()
+    private val tileDst = RectF()
+
+    private fun levelFor(z: Float) = when { z <= 1.01f -> 0; z <= 2.01f -> 1; z <= 4.01f -> 2; else -> 3 }
 
     override fun onDraw(canvas: Canvas) = drawPages(canvas)
 
     private fun drawPages(canvas: Canvas) {
         canvas.drawColor(0xFFE8E8EC.toInt())
         if (rects.isEmpty()) return
-        val visible = rects.indices.filter { RectF.intersects(screenRect(it), RectF(0f, 0f, width.toFloat(), height.toFloat())) }
+        val screen = RectF(0f, 0f, width.toFloat(), height.toFloat())
+        val visible = rects.indices.filter { RectF.intersects(screenRect(it), screen) }
+        val level = levelFor(zoom)
+        val want = HashSet<TileKey>()
+        val center = screen.centerX() to screen.centerY()
         for (i in visible) {
             val r = screenRect(i)
             canvas.drawRect(r.left + 2, r.top + 3, r.right + 2, r.bottom + 3, shadowPaint)
             canvas.drawRect(r, pagePaint)
-            val base = pageBitmaps[i]
-            if (base != null) canvas.drawBitmap(base, null, r, bitmapPaint) else requestPage(i)
-            sharp[i]?.takeIf { abs(it.zoom - zoom) < 0.001f }?.let { s ->
-                // Into an exact rectangle: drawBitmap(x, y) may rescale by screen density, which put
-                // the sharp render off from the page and made it jump when it appeared.
-                val x = s.left - (scrollXf - s.scrollX)
-                val y = s.top - (scrollYf - s.scrollY)
-                sharpRect.set(x, y, x + s.bitmap.width, y + s.bitmap.height)
-                canvas.drawBitmap(s.bitmap, null, sharpRect, null)
-            }
+            canvas.save()
+            canvas.clipRect(r)
+            // Coarse to fine: the whole page at 1× underneath, then each level up to the one wanted (and one above, when zooming out).
+            for (lvl in 0..minOf(level + 1, MAX_LEVEL)) drawTiles(canvas, i, lvl, r, screen, request = false, want, center)
+            canvas.restore()
+            // What to render: this level's tiles on screen, and the page's 1× tiles to fall back on.
+            drawTiles(null, i, level, r, screen, request = true, want, center)
+            if (level > 0) drawTiles(null, i, 0, r, r, request = true, want, center)
+
             pageMatrix(i, drawMatrix)
             for (h in hits) if (h.page == i) for (b in h.boxes) {
                 hitRect.set(b); drawMatrix.mapRect(hitRect)
@@ -307,56 +330,66 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             canvas.clipRect(r)
             // The renderer doesn't place strokes itself: the canvas maps page points to the screen,
             // and the same matrix is passed so it draws at the right resolution.
-            pageMatrix(i, drawMatrix)
             canvas.concat(drawMatrix)
             for (s in strokes) if (s.page == i) strokeRenderer.draw(canvas, s.stroke, drawMatrix)
             canvas.restore()
         }
-        // Keep the neighbours ready for a page turn.
-        (visible.flatMap { listOf(it - 1, it + 1) } - visible.toSet()).filter { it in rects.indices }.forEach { if (pageBitmaps[it] == null) requestPage(it) }
-        // Forget pages far from the screen.
-        pageBitmaps.keys.filter { k -> visible.none { abs(it - k) <= 2 } }.forEach { pageBitmaps.remove(it)?.recycle() }
-    }
-
-    private fun requestPage(i: Int) {
-        if (!pending.add(i)) return
-        val w = (rects[i].width()).roundToInt()
-        val h = (rects[i].height()).roundToInt()
-        val m = Matrix().apply { setScale(scales[i], scales[i]) }
-        renderer.render(i, w, h, m) { bmp ->
-            pending.remove(i)
-            if (i in rects.indices) { pageBitmaps.put(i, bmp)?.recycle(); invalidate() } else bmp.recycle()
-        }
-    }
-
-    /** Diagnostics: off to see the plain page alone. */
-    var sharpEnabled = true
-    var sharpDelay = 140L
-    private val sharpRequest = Runnable { if (sharpEnabled) renderSharp() }
-    private fun scheduleSharp() {
-        removeCallbacks(sharpRequest)
-        if (zoom > 1.05f) postDelayed(sharpRequest, sharpDelay) else if (sharp.isNotEmpty()) { sharp.values.forEach { it.bitmap.recycle() }; sharp.clear() }
-    }
-
-    /** A sharp render of the part of the current page that's on screen (neighbours peeking in stay as they are). */
-    private fun renderSharp() {
-        val screen = RectF(0f, 0f, width.toFloat(), height.toFloat())
-        for (i in listOf(currentPage).filter { it in rects.indices }) {
+        // Keep the neighbours' 1× tiles ready for a page turn.
+        for (i in (visible.flatMap { listOf(it - 1, it + 1) } - visible.toSet()).filter { it in rects.indices }) {
             val r = screenRect(i)
-            val part = RectF(r)
-            if (!part.intersect(screen)) continue
-            val m = pageMatrix(i).apply { postTranslate(-part.left, -part.top) }
-            val z = zoom; val sx = scrollXf; val sy = scrollYf
-            renderer.render(i, part.width().roundToInt(), part.height().roundToInt(), m, PageRenderer.Kind.SHARP) { bmp ->
-                sharp.put(i, Sharp(i, bmp, z, part.left, part.top, sx, sy))?.bitmap?.recycle()
+            drawTiles(null, i, 0, r, r, request = true, want, center, priority = 1e7f)
+        }
+        wanted = want
+    }
+
+    /**
+     * Page [i]'s tiles at [lvl] that fall in [area] (screen coordinates): drawn on [canvas] if it's
+     * given and they're ready, or (with [request]) asked for when missing and noted in [want].
+     */
+    private fun drawTiles(
+        canvas: Canvas?, i: Int, lvl: Int, r: RectF, area: RectF, request: Boolean,
+        want: MutableSet<TileKey>, center: Pair<Float, Float>, priority: Float = 0f,
+    ) {
+        val pxPerPoint = scales[i] * (1 shl lvl) // tile pixels per page point
+        val f = zoom / (1 shl lvl) // screen pixels per tile pixel
+        val pageW = sizes[i].width * pxPerPoint
+        val pageH = sizes[i].height * pxPerPoint
+        val part = RectF(r)
+        if (!part.intersect(area)) return
+        val x0 = ((part.left - r.left) / f / TILE).toInt().coerceAtLeast(0)
+        val y0 = ((part.top - r.top) / f / TILE).toInt().coerceAtLeast(0)
+        val x1 = ((part.right - r.left) / f / TILE).toInt().coerceAtMost(((pageW - 1) / TILE).toInt())
+        val y1 = ((part.bottom - r.top) / f / TILE).toInt().coerceAtMost(((pageH - 1) / TILE).toInt())
+        for (ty in y0..y1) for (tx in x0..x1) {
+            val key = TileKey(i, lvl, tx, ty)
+            val w = minOf(TILE.toFloat(), pageW - tx * TILE).toInt().coerceAtLeast(1)
+            val h = minOf(TILE.toFloat(), pageH - ty * TILE).toInt().coerceAtLeast(1)
+            tileDst.set(r.left + tx * TILE * f, r.top + ty * TILE * f, r.left + (tx * TILE + w) * f, r.top + (ty * TILE + h) * f)
+            if (canvas != null) {
+                tiles[key]?.let { b -> tileSrc.set(0, 0, w, h); canvas.drawBitmap(b, tileSrc, tileDst, bitmapPaint) }
+                continue
+            }
+            if (!request) continue
+            want += key
+            if (key in tiles || !pendingTiles.add(key)) continue
+            val dx = tileDst.centerX() - center.first
+            val dy = tileDst.centerY() - center.second
+            val m = Matrix().apply { setScale(pxPerPoint, pxPerPoint); postTranslate(-tx * TILE.toFloat(), -ty * TILE.toFloat()) }
+            renderer.render(i, w, h, m, priority = priority + dx * dx + dy * dy, wanted = { key in wanted }) { bmp ->
+                pendingTiles.remove(key)
+                if (bmp == null) return@render
+                if (i !in rects.indices) { bmp.recycle(); return@render }
+                tiles.put(key, bmp)?.recycle()
                 invalidate()
             }
         }
     }
 
     fun dropBitmaps() {
-        pageBitmaps.values.forEach { it.recycle() }; pageBitmaps.clear(); pending.clear()
-        sharp.values.forEach { it.bitmap.recycle() }; sharp.clear()
+        tiles.values.forEach { it.recycle() }
+        tiles.clear()
+        pendingTiles.clear()
+        wanted = emptySet()
     }
 
     // ---- touch ----
