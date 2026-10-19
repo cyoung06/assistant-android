@@ -10,6 +10,7 @@ import com.syeyoung.assistant.api.apis.TaskControllerApi
 import com.syeyoung.assistant.api.models.AnalyzeRequest
 import com.syeyoung.assistant.api.models.AttachmentInfo
 import com.syeyoung.assistant.api.models.CreateEventRequest
+import com.syeyoung.assistant.api.models.EventResponse
 import com.syeyoung.assistant.api.models.CreateTaskRequest
 import com.syeyoung.assistant.api.infrastructure.HttpResponse
 import io.ktor.client.HttpClient
@@ -21,8 +22,10 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.forms.formData
 import io.ktor.client.request.forms.submitFormWithBinaryData
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.patch
+import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.Headers
@@ -82,11 +85,20 @@ class Api(endpoint: Endpoint) {
         http.patch("$base/api/v1/tasks/$id") { contentType(ContentType.Application.Json); setBody(patch) }
     }.let { }
 
+    // Event IDs are iCalendar UIDs (often with @ or spaces): the generated client doesn't escape path values.
+    private fun eventUrl(id: String) = "$base/api/v1/events/${java.net.URLEncoder.encode(id, Charsets.UTF_8).replace("+", "%20")}"
+
     suspend fun patchEvent(id: String, patch: JsonObject) = send {
-        http.patch("$base/api/v1/events/${java.net.URLEncoder.encode(id, Charsets.UTF_8).replace("+", "%20")}") {
-            contentType(ContentType.Application.Json); setBody(patch)
-        }
+        http.patch(eventUrl(id)) { contentType(ContentType.Application.Json); setBody(patch) }
     }.let { }
+
+    suspend fun event(id: String): EventResponse = send { http.get(eventUrl(id)) }.body()
+
+    suspend fun postEvent(body: JsonObject) = send {
+        http.post("$base/api/v1/events") { contentType(ContentType.Application.Json); setBody(body) }
+    }.let { }
+
+    suspend fun deleteEvent(id: String) = send { http.delete(eventUrl(id)) }.let { }
 
     suspend fun upload(bytes: ByteArray, filename: String, mimeType: String): AttachmentInfo = send {
         http.submitFormWithBinaryData(

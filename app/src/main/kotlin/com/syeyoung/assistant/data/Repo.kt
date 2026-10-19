@@ -128,6 +128,12 @@ class Repo private constructor(private val context: Context) {
 
     suspend fun events(from: String, to: String): List<EventOccurrence> = api().calendar.occurrences(from, to).value()
 
+    suspend fun event(id: String) = api().event(id)
+
+    suspend fun saveEvent(id: String?, body: kotlinx.serialization.json.JsonObject) = if (id == null) api().postEvent(body) else api().patchEvent(id, body)
+
+    suspend fun deleteEvent(id: String) = api().deleteEvent(id)
+
     suspend fun projectSchedule(id: UUID): ProjectSchedule = api().calendar.projectSchedule(id, 28).value()
 
     suspend fun mailMessage(messageId: String): MailMessage = api().mail.mailMessage(messageId).value()

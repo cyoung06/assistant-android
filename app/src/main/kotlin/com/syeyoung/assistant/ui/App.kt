@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.syeyoung.assistant.api.models.TaskResponse
 import com.syeyoung.assistant.data.drawerProjects
+import com.syeyoung.assistant.data.EventTarget
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.data.TaskChange
 import com.syeyoung.assistant.data.closed
@@ -82,6 +83,11 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     var screen by remember { mutableStateOf<Screen>(Screen.Active) }
     var detail by remember { mutableStateOf(openTask) }
     var creating by remember { mutableStateOf(false) }
+    var event by remember { mutableStateOf<EventTarget?>(null) }
+    // Bumped when the event editor closes, so the calendar reads its range again.
+    var calendarVersion by remember { mutableStateOf(0) }
+    // The day a new event from the calendar starts on: today, or the first day shown when today isn't.
+    var calendarDay by remember { mutableStateOf(LocalDate.now()) }
     val wide = LocalConfiguration.current.screenWidthDp >= 840
     val drawer = rememberDrawerState(DrawerValue.Closed)
 
@@ -107,6 +113,13 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     mail?.let { id ->
         BackHandler { mail = null }
         MailReader(id, onBack = { mail = null })
+        return
+    }
+
+    event?.let { t ->
+        val close = { event = null; calendarVersion += 1 }
+        BackHandler { close() }
+        EventEditor(t, onDone = close)
         return
     }
 
@@ -151,7 +164,13 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                     navigationIcon = { if (!wide) IconButton({ scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, "Navigation") } },
                 )
             },
-            floatingActionButton = { if (screen != Screen.Settings) FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New task") } },
+            floatingActionButton = {
+                when (screen) {
+                    Screen.Settings -> {}
+                    Screen.Calendar -> FloatingActionButton({ event = EventTarget.New(calendarDay) }) { Icon(Icons.Filled.Add, "New event") }
+                    else -> FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New task") }
+                }
+            },
             snackbarHost = { SnackbarHost(snackbar) },
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize()) {
@@ -175,7 +194,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                         state.data.projects, state.loading, { scope.launch { repo.refresh() } }, { detail = it.id }, onStatus, showProject = false,
                         header = { ProjectScheduleHeader(s.id, s.title) },
                     )
-                    Screen.Calendar -> CalendarScreen { detail = it }
+                    Screen.Calendar -> CalendarScreen(calendarVersion, onOpenTask = { detail = it }, onOpenEvent = { event = it }, onDay = { calendarDay = it })
                     Screen.Triage -> TriageScreen(onOpenTask = { detail = it }, onOpenMail = { mail = it })
                     Screen.Settings -> SettingsScreen()
                 }

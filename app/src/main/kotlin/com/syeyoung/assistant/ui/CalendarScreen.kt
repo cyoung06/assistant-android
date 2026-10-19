@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.syeyoung.assistant.api.models.EventOccurrence
 import com.syeyoung.assistant.data.CalItem
+import com.syeyoung.assistant.data.EventTarget
 import com.syeyoung.assistant.data.Placed
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.data.allDayOn
@@ -83,17 +84,16 @@ private val HOUR = 48.dp
 private val AXIS = 44.dp
 
 /**
- * Week and month grids of events and deadlines (events are edited on the web or the Mac). The week
- * shows all seven days when there's room, three on a phone, one when very narrow; swipe to move.
+ * Week and month grids of events and deadlines; tapping an event opens its editor. The week shows all
+ * seven days when there's room, three on a phone, one when very narrow; swipe to move.
  */
 @Composable
-fun CalendarScreen(onOpenTask: (UUID) -> Unit) {
+fun CalendarScreen(version: Int, onOpenTask: (UUID) -> Unit, onOpenEvent: (EventTarget) -> Unit, onDay: (LocalDate) -> Unit) {
     val context = LocalContext.current
     val repo = Repo.get(context)
     val state by repo.state.collectAsStateCompat()
     var mode by remember { mutableStateOf(CalMode.Week) }
     var anchor by remember { mutableStateOf(LocalDate.now()) }
-    var shown by remember { mutableStateOf<CalItem?>(null) }
     val now by produceState(LocalDateTime.now()) { while (true) { delay(60_000); value = LocalDateTime.now() } }
     val today = now.toLocalDate()
 
@@ -107,7 +107,8 @@ fun CalendarScreen(onOpenTask: (UUID) -> Unit) {
         }
         var events by remember { mutableStateOf<List<EventOccurrence>>(emptyList()) }
         var error by remember { mutableStateOf<String?>(null) }
-        LaunchedEffect(from, to) {
+        LaunchedEffect(from, to, today) { onDay(if (today in from..to) today else from) }
+        LaunchedEffect(from, to, version) {
             runCatching { repo.events(from.toString(), to.toString()) }.onSuccess { events = it; error = null }.onFailure { error = it.message }
         }
         val projectColors = remember(state.data.projects) { state.data.projects.associate { it.id to it.color } }
@@ -118,7 +119,10 @@ fun CalendarScreen(onOpenTask: (UUID) -> Unit) {
                 CalMode.Month -> month.plusMonths(by.toLong()).atDay(1)
             }
         }
-        val open = { i: CalItem -> i.task?.let { onOpenTask(it.id) } ?: run { shown = i } }
+        val open = { i: CalItem ->
+            i.task?.let { onOpenTask(it.id) } ?: i.event?.let { onOpenEvent(EventTarget.Existing(it.id, i.start.toLocalDate())) }
+            Unit
+        }
 
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -146,7 +150,6 @@ fun CalendarScreen(onOpenTask: (UUID) -> Unit) {
             }
         }
     }
-    shown?.let { EventInfo(it) { shown = null } }
 }
 
 @Composable
@@ -308,22 +311,6 @@ private fun MonthGrid(month: YearMonth, items: List<CalItem>, today: LocalDate, 
             }
         }
     }
-}
-
-@Composable
-private fun EventInfo(item: CalItem, onDismiss: () -> Unit) {
-    val e = item.event ?: return
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onDismiss) { Text("Close") } },
-        title = { Text(item.title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(item.start.format(DAY) + if (item.allDay) "" else " · " + timeRange(item))
-                Text(listOfNotNull(e.calendarName, if (e.repeats) "repeats" else null).joinToString(" · "), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        },
-    )
 }
 
 private fun timeRange(i: CalItem) = if (i.task != null) "Due " + i.task.due?.time?.take(5) else i.start.format(TIME) + "–" + i.end.format(TIME)
