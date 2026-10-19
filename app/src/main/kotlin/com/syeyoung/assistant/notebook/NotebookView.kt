@@ -79,6 +79,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         dropBitmaps()
         layoutPages()
         goTo(currentPage.coerceAtMost(pageCount - 1).coerceAtLeast(0), animate = false)
+        onPageChanged(currentPage, pageCount)
     }
 
     /** After pages were added or removed: new sizes, and where each old page went (null = deleted). */
@@ -120,13 +121,20 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 contentH = top - gap + pad
             }
             ScrollMode.PAGED -> {
+                // Pages side by side, each fitted to the screen. They're spaced so that while one
+                // rests centred, its neighbours start just past the screen edges (no grey to cross
+                // before the next page shows); the spacing depends on the zoom, so this is redone
+                // when it changes.
                 scales = sizes.map { s -> min((w - 2 * pad) / s.width, (h - 2 * pad) / s.height) }
+                val widths = sizes.mapIndexed { i, s -> s.width * scales[i] }
+                val free = widths.map { max(0f, (w / zoom - it) / 2) }
+                var left = 0f
                 rects = sizes.mapIndexed { i, s ->
-                    val pw = s.width * scales[i]
+                    if (i > 0) left += max(free[i - 1], free[i]) + gap / zoom
                     val ph = s.height * scales[i]
-                    RectF(i * w + (w - pw) / 2, (h - ph) / 2, i * w + (w + pw) / 2, (h + ph) / 2)
+                    RectF(left, (h - ph) / 2, left + widths[i], (h + ph) / 2).also { left += widths[i] }
                 }
-                contentW = w * sizes.size
+                contentW = left
                 contentH = h
             }
         }
@@ -156,8 +164,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         if (rects.isEmpty()) return
         val p = page.coerceIn(0, rects.size - 1)
         if (mode == ScrollMode.PAGED) zoom = 1f
-        val x = if (mode == ScrollMode.PAGED) p * width.toFloat() else scrollXf
-        val y = if (mode == ScrollMode.PAGED) 0f else (rects[p].top * zoom - gap).coerceIn(0f, max(0f, contentH * zoom - height))
+        val x = if (mode == ScrollMode.PAGED) rangeFor(p).left else scrollXf
+        val y = if (mode == ScrollMode.PAGED) rangeFor(p).top else (rects[p].top * zoom - gap).coerceIn(0f, max(0f, contentH * zoom - height))
         if (animate) animateTo(x, y) else { scrollXf = x; scrollYf = y; clampScroll(); afterMove() }
     }
 
@@ -168,25 +176,28 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private fun scrollRange(): RectF {
         val w = width.toFloat()
         val h = height.toFloat()
-        fun axis(from: Float, to: Float, view: Float, pad: Float): Pair<Float, Float> {
-            val lo = from * zoom - pad
-            val hi = to * zoom + pad - view
-            return if (hi >= lo) lo to hi else ((from + to) / 2 * zoom - view / 2).let { it to it }
-        }
         return when {
             rects.isEmpty() -> RectF()
-            mode == ScrollMode.PAGED && zoom <= 1.01f -> RectF(0f, 0f, max(0f, contentW - w), 0f)
-            mode == ScrollMode.PAGED -> {
-                val r = rects[currentPage]
-                val (x0, x1) = axis(r.left, r.right, w, gap)
-                val (y0, y1) = axis(r.top, r.bottom, h, gap)
-                RectF(x0, y0, x1, y1)
-            }
+            mode == ScrollMode.PAGED -> rangeFor(currentPage)
             else -> {
                 val (x0, x1) = axis(rects.minOf { it.left }, rects.maxOf { it.right }, w, gap)
                 RectF(x0, 0f, x1, max(0f, contentH * zoom - h))
             }
         }
+    }
+
+    /** Page by page: where the screen may rest on page [i] (just past its edges, centred where it fits). */
+    private fun rangeFor(i: Int): RectF {
+        val r = rects[i.coerceIn(rects.indices)]
+        val (x0, x1) = axis(r.left, r.right, width.toFloat(), gap)
+        val (y0, y1) = axis(r.top, r.bottom, height.toFloat(), gap)
+        return RectF(x0, y0, x1, y1)
+    }
+
+    private fun axis(from: Float, to: Float, view: Float, pad: Float): Pair<Float, Float> {
+        val lo = from * zoom - pad
+        val hi = to * zoom + pad - view
+        return if (hi >= lo) lo to hi else ((from + to) / 2 * zoom - view / 2).let { it to it }
     }
 
     private fun clampScroll() {
@@ -198,7 +209,10 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private fun afterMove() {
         val before = currentPage
         currentPage = when (mode) {
-            ScrollMode.PAGED -> ((scrollXf + width / 2f) / zoom / width).toInt().coerceIn(0, max(0, pageCount - 1))
+            ScrollMode.PAGED -> {
+                val mid = (scrollXf + width / 2f) / zoom
+                rects.indices.minByOrNull { abs(rects[it].centerX() - mid) } ?: 0
+            }
             ScrollMode.CONTINUOUS -> {
                 val mid = (scrollYf + height / 2f) / zoom
                 rects.indexOfFirst { mid <= it.bottom + gap / 2 }.let { if (it < 0) pageCount - 1 else it }.coerceAtLeast(0)
@@ -224,44 +238,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private class Sharp(val page: Int, val bitmap: Bitmap, val zoom: Float, val left: Float, val top: Float, val scrollX: Float, val scrollY: Float)
     private val sharp = HashMap<Int, Sharp>()
 
-    // A page turn in progress: the screen as it was slides out while the new page slides in.
-    private var turnShot: Bitmap? = null
-    private var turnDir = 1
-    private var turnVertical = false
-    private var turnT = 1f
-    private var turnAnim: ValueAnimator? = null
-
-    override fun onDraw(canvas: Canvas) {
-        val shot = turnShot
-        if (shot == null) { drawPages(canvas); return }
-        val size = if (turnVertical) height.toFloat() else width.toFloat()
-        val off = (1 - turnT) * size * turnDir
-        canvas.save()
-        if (turnVertical) canvas.translate(0f, off) else canvas.translate(off, 0f)
-        drawPages(canvas)
-        canvas.restore()
-        if (turnVertical) canvas.drawBitmap(shot, 0f, off - size * turnDir, null) else canvas.drawBitmap(shot, off - size * turnDir, 0f, null)
-    }
-
-    /** Turns the page with a slide: [change] moves to the new page; [dir] 1 = forward. */
-    private fun animateTurn(dir: Int, vertical: Boolean, change: () -> Unit) {
-        turnAnim?.end()
-        if (width <= 0 || height <= 0) { change(); afterMove(); return }
-        val shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        drawPages(Canvas(shot))
-        change()
-        turnShot = shot; turnDir = dir; turnVertical = vertical; turnT = 0f
-        afterMove()
-        turnAnim = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 260
-            interpolator = DecelerateInterpolator(1.6f)
-            addUpdateListener { turnT = it.animatedValue as Float; invalidate() }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: android.animation.Animator) { turnShot?.recycle(); turnShot = null; turnT = 1f; invalidate() }
-            })
-            start()
-        }
-    }
+    override fun onDraw(canvas: Canvas) = drawPages(canvas)
 
     private fun drawPages(canvas: Canvas) {
         canvas.drawColor(0xFFE8E8EC.toInt())
@@ -434,115 +411,116 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     private val scroller = OverScroller(context)
     private var settle: ValueAnimator? = null
-    private var dragStartX = 0f
-    private var scaled = false
 
     private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(d: ScaleGestureDetector): Boolean {
+            if (rects.isEmpty()) return true
             val next = (zoom * d.scaleFactor).coerceIn(1f, 8f)
-            val f = next / zoom
-            scrollXf = (scrollXf + d.focusX) * f - d.focusX
-            scrollYf = (scrollYf + d.focusY) * f - d.focusY
+            // The point under the fingers, on its page, stays under them.
+            val page = currentPage
+            val pt = floatArrayOf(d.focusX, d.focusY)
+            Matrix().also { pageMatrix(page).invert(it) }.mapPoints(pt)
             zoom = next
-            scaled = true
+            if (mode == ScrollMode.PAGED) layoutPages()
+            val r = rects[page]
+            scrollXf = r.left * zoom + pt[0] * scales[page] * zoom - d.focusX
+            scrollYf = r.top * zoom + pt[1] * scales[page] * zoom - d.focusY
             clampScroll(); afterMove()
             return true
         }
     })
 
+    /*
+     * Page by page works the same at every zoom: the page follows the finger 1:1 both ways. Past
+     * its left or right edge the neighbouring page slides in, and on release it turns if pulled far
+     * enough (or flicked while already at that edge). Up and down only move within the page: past
+     * its top or bottom it stretches (at half speed) and springs back.
+     */
+    private var dragPage = 0
+    private var atLeft = false
+    private var atRight = false
+    /** The whole width of the page fits on screen: only then does a drag turn pages (zoomed in further, it only pans). */
+    private var canTurn = false
+    private var flingHandled = false
+
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
             scroller.forceFinished(true); settle?.cancel()
-            pushX = 0f; pushY = 0f
-            dragStartX = scrollXf
-            scaled = false
+            if (rects.isNotEmpty()) {
+                dragPage = currentPage
+                val r = rangeFor(dragPage)
+                atLeft = scrollXf <= r.left + 1; atRight = scrollXf >= r.right - 1
+                canTurn = rects[dragPage].width() * zoom <= width + 1f
+            }
             return true
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
-            if (mode == ScrollMode.PAGED && zoom <= 1.01f) {
-                scrollXf = (scrollXf + dx).coerceIn(0f, max(0f, contentW - width))
-                afterMove()
+            if (rects.isEmpty()) return true
+            if (mode == ScrollMode.CONTINUOUS) {
+                scrollXf += dx; scrollYf += dy
+                clampScroll(); afterMove()
                 return true
             }
-            val wantX = scrollXf + dx
-            val wantY = scrollYf + dy
-            scrollXf = wantX; scrollYf = wantY
-            clampScroll()
-            if (mode == ScrollMode.PAGED) pushPastEdge(wantX - scrollXf, wantY - scrollYf)
+            val r = rangeFor(dragPage)
+            // Zoomed in past the page's width, a drag only pans, and stops at the page's edge.
+            scrollXf = if (canTurn) (scrollXf + dx).coerceIn(rangeFor(0).left - width * 0.25f, rangeFor(pageCount - 1).right + width * 0.25f)
+            else (scrollXf + dx).coerceIn(r.left, r.right)
+            val y = scrollYf + dy
+            scrollYf = if ((y < r.top && dy < 0) || (y > r.bottom && dy > 0)) scrollYf + dy * 0.45f else y
             afterMove()
             return true
         }
 
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-            if (mode == ScrollMode.PAGED && zoom <= 1.01f) {
-                // Left/right, or up/down (the page doesn't move vertically, but a flick turns it).
-                val vertical = abs(vy) > abs(vx)
-                val v = if (vertical) vy else vx
-                val target = when {
-                    v < -800 -> currentPageFrom(dragStartX) + 1
-                    v > 800 -> currentPageFrom(dragStartX) - 1
-                    else -> nearestPage()
-                }
-                flingHandled = true
-                val to = target.coerceIn(0, max(0, pageCount - 1))
-                if (vertical && to != currentPage) {
-                    val dir = if (to > currentPage) 1 else -1
-                    animateTurn(dir, vertical = true) { scrollXf = to * width.toFloat() }
-                } else turnTo(target)
+            if (rects.isEmpty()) return true
+            if (mode == ScrollMode.CONTINUOUS) {
+                val (minX, maxX, minY, maxY) = scrollBounds()
+                scroller.fling(scrollXf.toInt(), scrollYf.toInt(), -vx.toInt(), -vy.toInt(), minX, maxX, minY, maxY)
+                postInvalidateOnAnimation()
                 return true
             }
-            val (minX, maxX, minY, maxY) = scrollBounds()
-            scroller.fling(scrollXf.toInt(), scrollYf.toInt(), -vx.toInt(), -vy.toInt(), minX, maxX, minY, maxY)
-            postInvalidateOnAnimation()
+            flingHandled = true
+            val r = rangeFor(dragPage)
+            if (abs(vx) > abs(vy)) {
+                val dir = if (vx < 0) 1 else -1
+                val atEdge = if (dir > 0) atRight || scrollXf > r.right + 1 else atLeft || scrollXf < r.left - 1
+                if (canTurn && abs(vx) > 700 && atEdge && dragPage + dir in rects.indices) { turnHorizontal(dragPage + dir); return true }
+            }
+            // Otherwise a fling moves within the page.
+            if (scrollXf in r.left..r.right && scrollYf in r.top..r.bottom) {
+                scroller.fling(scrollXf.toInt(), scrollYf.toInt(), -vx.toInt(), -vy.toInt(), r.left.toInt(), r.right.toInt(), r.top.toInt(), r.bottom.toInt())
+                postInvalidateOnAnimation()
+            } else settlePaged()
             return true
         }
     })
-    private var flingHandled = false
 
     private fun fingers(e: MotionEvent) {
         if (e.actionMasked == MotionEvent.ACTION_DOWN) flingHandled = false
         scale.onTouchEvent(e)
         if (!scale.isInProgress) gestures.onTouchEvent(e)
-        if (e.actionMasked == MotionEvent.ACTION_UP && mode == ScrollMode.PAGED && zoom <= 1.01f && !flingHandled) turnTo(nearestPage())
-        if (e.actionMasked == MotionEvent.ACTION_UP && mode == ScrollMode.PAGED && zoom < 1.01f && scaled) turnTo(currentPage)
+        if ((e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) && mode == ScrollMode.PAGED && !flingHandled) settlePaged()
     }
 
-    /**
-     * Zoomed in, page by page: pushing on past the page's edge (what scrolling couldn't take) goes
-     * on to the next page (or back to the previous one) at the same zoom, from its near edge.
-     */
-    private var pushX = 0f
-    private var pushY = 0f
-    private fun pushPastEdge(leftX: Float, leftY: Float) {
-        pushX = if (leftX != 0f && pushX * leftX >= 0) pushX + leftX else 0f
-        pushY = if (leftY != 0f && pushY * leftY >= 0) pushY + leftY else 0f
-        val needed = 90f * resources.displayMetrics.density
-        val dir = when {
-            abs(pushY) > needed -> if (pushY > 0) 1 else -1
-            abs(pushX) > needed -> if (pushX > 0) 1 else -1
-            else -> return
-        }
-        val vertical = abs(pushY) > needed
-        pushX = 0f; pushY = 0f
-        val target = currentPage + dir
-        if (target !in rects.indices) return
-        animateTurn(dir, vertical) {
-            // The same spot in the next page's slot, then to its near edge.
-            scrollXf += dir * width * zoom
-            currentPage = target
-            val r = scrollRange()
-            if (vertical) scrollYf = if (dir > 0) r.top else r.bottom else scrollXf = if (dir > 0) r.left else r.right
-            clampScroll()
+    /** After a drag (page by page): turn if pulled far enough onto a neighbour, else spring back. */
+    private fun settlePaged() {
+        if (rects.isEmpty()) return
+        val r = rangeFor(dragPage)
+        val overX = scrollXf - scrollXf.coerceIn(r.left, r.right)
+        when {
+            canTurn && abs(overX) > width * 0.18f && dragPage + sign(overX) in rects.indices -> turnHorizontal(dragPage + sign(overX))
+            else -> animateTo(scrollXf.coerceIn(r.left, r.right), scrollYf.coerceIn(r.top, r.bottom))
         }
     }
 
-    private fun currentPageFrom(x: Float) = ((x + width / 2f) / width).toInt().coerceIn(0, max(0, pageCount - 1))
-    private fun nearestPage() = ((scrollXf + width / 2f) / width).toInt().coerceIn(0, max(0, pageCount - 1))
+    private fun sign(v: Float) = if (v > 0) 1 else -1
 
-    private fun turnTo(page: Int) {
-        val p = page.coerceIn(0, max(0, pageCount - 1))
-        animateTo(p * width.toFloat(), 0f)
+    /** Slides sideways to page [target], at the same zoom, to its near edge. */
+    private fun turnHorizontal(target: Int) {
+        val t = rangeFor(target)
+        val forward = target > dragPage
+        animateTo(if (forward) t.left else t.right, scrollYf.coerceIn(t.top, t.bottom))
     }
 
     private fun animateTo(x: Float, y: Float) {
