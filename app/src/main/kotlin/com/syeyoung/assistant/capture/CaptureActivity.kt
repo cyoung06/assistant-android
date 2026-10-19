@@ -266,7 +266,7 @@ private fun Analyze(shared: Shared, onDone: () -> Unit) {
                             val api = repo.api()
                             picks.filter { it.keep }.forEachIndexed { i, p ->
                                 val x = p.proposal
-                                if (x.kind == "event") api.createEvent(CreateEventRequest(title = p.title.trim(), notes = x.description, start = x.start, end = x.end, startDate = x.startDate, endDate = x.endDate))
+                                if (x.kind == "event") api.createEvent(CreateEventRequest(title = p.title.trim(), notes = x.description, start = x.start, end = x.end, startDate = x.startDate, endDate = x.endDate, projectId = x.projectId))
                                 // The screenshots go with the first task made from them.
                                 else api.createTask(
                                     CreateTaskRequest(
