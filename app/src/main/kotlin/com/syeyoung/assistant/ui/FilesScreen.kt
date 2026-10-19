@@ -81,12 +81,19 @@ import java.util.UUID
 
 private const val PROJECTS = "Projects/"
 
+/** Where each storage was left (its open folder), and which storage Files had open: kept while the app runs, so switching away and back doesn't start over. */
+private object FilesNav {
+    val folders = mutableMapOf<String, String>()
+    var open: Pair<String, String>? = null
+}
+
 /** Each project's storage, as tiles in the project's colour; tap one to open it. */
 @Composable
 fun FilesScreen() {
     val repo = Repo.get(LocalContext.current)
     val state by repo.state.collectAsStateCompat()
-    var open by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var open by remember { mutableStateOf(FilesNav.open) }
+    LaunchedEffect(open) { FilesNav.open = open }
     var folders by remember { mutableStateOf<List<DriveEntry>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
@@ -147,7 +154,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?) {
     val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("ui", Context.MODE_PRIVATE) }
     var icons by remember { mutableStateOf(prefs.getString("files.view", "icons") == "icons") }
-    var path by remember(root) { mutableStateOf(root) }
+    var path by remember(root) { mutableStateOf(FilesNav.folders[root] ?: root) }
     var entries by remember { mutableStateOf<List<DriveEntry>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
@@ -156,6 +163,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?) {
     var busy by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(path, reload) {
+        FilesNav.folders[root] = path
         error = null
         runCatching { repo.api().driveFolder(path).propertyEntries }.onSuccess { entries = it }.onFailure { error = it.message }
     }
