@@ -212,7 +212,7 @@ fun StylePicker(selected: PageStyle, onPick: (PageStyle) -> Unit) {
  * writing.
  */
 @Composable
-fun PageSidebar(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, onGo: (Int) -> Unit, onAll: () -> Unit) {
+fun PageSidebar(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, onGo: (Int) -> Unit, onAll: () -> Unit, onChange: () -> Unit) {
     val list = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(Unit) { list.scrollToItem((ui.page - 1).coerceAtLeast(0)) }
     // Keep the page on screen in view as it changes.
@@ -220,16 +220,16 @@ fun PageSidebar(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, onGo: (In
         val visible = list.layoutInfo.visibleItemsInfo.map { it.index }
         if (ui.page !in visible) list.animateScrollToItem((ui.page - 1).coerceAtLeast(0))
     }
-    Surface(Modifier.width(150.dp).fillMaxHeight(), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 8.dp) {
+    Surface(Modifier.width(225.dp).fillMaxHeight(), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 2.dp) {
         Column {
             Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("${ui.pages} pages", Modifier.weight(1f), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                IconButton({ ui.quickPages = false }) { Icon(Icons.Filled.Close, "Close", Modifier.size(20.dp)) }
+                Text("${ui.pages} pages", Modifier.weight(1f), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                IconButton({ ui.quickPages = false }) { Icon(Icons.Filled.Close, "Close", Modifier.size(26.dp)) }
             }
             androidx.compose.foundation.lazy.LazyColumn(
                 Modifier.weight(1f), state = list,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 18.dp, end = 18.dp, bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 24.dp, end = 24.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 items(count = ui.pages, key = { it }) { i ->
                     var bmp by remember(i) { mutableStateOf<Bitmap?>(null) }
@@ -240,9 +240,15 @@ fun PageSidebar(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, onGo: (In
                                 .border(if (i == ui.page) 3.dp else 1.dp, if (i == ui.page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
                         ) {
                             bmp?.let { Image(it.asImageBitmap(), "Page ${i + 1}", Modifier.fillMaxSize()) }
-                            if (i in ui.bookmarks) Icon(Icons.Filled.Star, "Bookmarked", Modifier.align(Alignment.TopEnd).padding(2.dp).size(16.dp), tint = Color(0xFFF2B600))
+                            // Tap the star to bookmark (or unbookmark) the page.
+                            val marked = i in ui.bookmarks
+                            Icon(
+                                if (marked) Icons.Filled.Star else Icons.Filled.StarBorder, if (marked) "Remove bookmark" else "Bookmark",
+                                Modifier.align(Alignment.TopEnd).clickable { ui.bookmarks = if (marked) ui.bookmarks - i else ui.bookmarks + i; onChange() }.padding(4.dp).size(24.dp),
+                                tint = if (marked) Color(0xFFF2B600) else Color(0x55000000),
+                            )
                         }
-                        Text("${i + 1}", fontSize = 12.sp, color = if (i == ui.page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${i + 1}", fontSize = 14.sp, color = if (i == ui.page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }

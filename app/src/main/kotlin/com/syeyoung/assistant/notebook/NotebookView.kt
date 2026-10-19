@@ -321,15 +321,16 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         if (zoom > 1.05f) postDelayed(sharpRequest, 140) else if (sharp.isNotEmpty()) { sharp.values.forEach { it.bitmap.recycle() }; sharp.clear() }
     }
 
+    /** A sharp render of the part of the current page that's on screen (neighbours peeking in stay as they are). */
     private fun renderSharp() {
         val screen = RectF(0f, 0f, width.toFloat(), height.toFloat())
-        for (i in rects.indices) {
+        for (i in listOf(currentPage).filter { it in rects.indices }) {
             val r = screenRect(i)
             val part = RectF(r)
             if (!part.intersect(screen)) continue
             val m = pageMatrix(i).apply { postTranslate(-part.left, -part.top) }
             val z = zoom; val sx = scrollXf; val sy = scrollYf
-            renderer.render(i, part.width().roundToInt(), part.height().roundToInt(), m) { bmp ->
+            renderer.render(i, part.width().roundToInt(), part.height().roundToInt(), m, PageRenderer.Kind.SHARP) { bmp ->
                 sharp.put(i, Sharp(i, bmp, z, part.left, part.top, sx, sy))?.bitmap?.recycle()
                 invalidate()
             }

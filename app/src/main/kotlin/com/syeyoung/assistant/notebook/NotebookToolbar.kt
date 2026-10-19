@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -95,6 +96,9 @@ fun NotebookToolbar(ui: ToolbarState, onChange: () -> Unit, onUndo: () -> Unit, 
         )
         val at = drag ?: rest
         val vertical = ui.edge == Edge.LEFT || ui.edge == Edge.RIGHT
+        // The drag handler below is set up once; it reads where the bar is now through this
+        // (reading `at` directly kept the spot from when it was set up, so a drag jumped back there).
+        val current by rememberUpdatedState(at)
 
         Surface(
             Modifier
@@ -113,8 +117,8 @@ fun NotebookToolbar(ui: ToolbarState, onChange: () -> Unit, onUndo: () -> Unit, 
                         .size(ITEM)
                         .pointerInput(screenW, screenH, barSize) {
                             detectDragGestures(
-                                onDragStart = { drag = at },
-                                onDrag = { change, amount -> change.consume(); drag = onScreen((drag ?: at) + amount) },
+                                onDragStart = { drag = current },
+                                onDrag = { change, amount -> change.consume(); drag = onScreen((drag ?: current) + amount) },
                                 onDragEnd = {
                                     val p = drag ?: return@detectDragGestures
                                     val cx = p.x + barSize.width / 2f

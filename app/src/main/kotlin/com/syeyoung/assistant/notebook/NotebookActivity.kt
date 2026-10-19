@@ -12,6 +12,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.AlertDialog
@@ -84,13 +86,14 @@ class NotebookActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize()) {
                     Column(Modifier.fillMaxSize()) {
                         NotebookHeader(ui, title, onBack = ::finish, onSearch = ::search, onHit = ::showHit, onChange = { changed(); scheduleSave() })
-                        Box(Modifier.fillMaxWidth().weight(1f)) {
-                            AndroidView({ stack }, Modifier.fillMaxSize())
-                            NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo)
-                            if (ui.searching) Box(Modifier.align(Alignment.TopEnd).padding(end = 8.dp)) { SearchResults(ui, ::showHit) }
-                            if (ui.quickPages) Box(Modifier.align(Alignment.CenterEnd)) {
-                                PageSidebar(ui, ::thumbnail, onGo = { view.goTo(it) }, onAll = { ui.quickPages = false; ui.browsing = true })
+                        Row(Modifier.fillMaxWidth().weight(1f)) {
+                            Box(Modifier.fillMaxHeight().weight(1f)) {
+                                AndroidView({ stack }, Modifier.fillMaxSize())
+                                NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo)
+                                if (ui.searching) Box(Modifier.align(Alignment.TopEnd).padding(end = 8.dp)) { SearchResults(ui, ::showHit) }
                             }
+                            // Beside the page, not over it: the page narrows to make room.
+                            if (ui.quickPages) PageSidebar(ui, ::thumbnail, onGo = { view.goTo(it) }, onAll = { ui.quickPages = false; ui.browsing = true }, onChange = { scheduleSave() })
                         }
                     }
                     if (ui.addingPage) AddPageDialog(ui) { style, atEnd -> addPage(style, atEnd); ui.save(prefs()) }
@@ -245,7 +248,7 @@ class NotebookActivity : ComponentActivity() {
         val w = (180 * resources.displayMetrics.density).toInt()
         val scale = w / size.width
         return kotlinx.coroutines.suspendCancellableCoroutine { c ->
-            renderer.render(i, w, (size.height * scale).toInt(), android.graphics.Matrix().apply { setScale(scale, scale) }) { if (c.isActive) c.resumeWith(Result.success(it)) }
+            renderer.render(i, w, (size.height * scale).toInt(), android.graphics.Matrix().apply { setScale(scale, scale) }, PageRenderer.Kind.THUMBNAIL) { if (c.isActive) c.resumeWith(Result.success(it)) }
         }
     }
 
