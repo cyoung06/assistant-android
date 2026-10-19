@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.MoveToInbox
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
@@ -58,6 +59,7 @@ import java.util.UUID
 
 sealed interface Screen {
     val title: String
+    data object Triage : Screen { override val title = "Triage" }
     data object Active : Screen { override val title = "Active" }
     data object Backlog : Screen { override val title = "Backlog" }
     data object All : Screen { override val title = "All tasks" }
@@ -73,6 +75,8 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     val context = LocalContext.current
     val repo = Repo.get(context)
     val state by repo.state.collectAsStateCompat()
+    val triage by repo.triage.collectAsStateCompat()
+    var mail by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var screen by remember { mutableStateOf<Screen>(Screen.Active) }
@@ -100,6 +104,11 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
         MailReader(id, onBack = onMailClosed)
         return
     }
+    mail?.let { id ->
+        BackHandler { mail = null }
+        MailReader(id, onBack = { mail = null })
+        return
+    }
 
     detail?.let { id ->
         BackHandler { detail = null }
@@ -110,6 +119,11 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     val nav: @Composable () -> Unit = {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 12.dp)) {
             Text("Assistant", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.titleLarge)
+            val waiting = triageCount(triage)
+            NavigationDrawerItem(
+                label = { Text("Triage") }, icon = { Icon(Icons.Filled.MoveToInbox, null) }, badge = { if (waiting > 0) Text("$waiting") },
+                selected = screen == Screen.Triage, onClick = { screen = Screen.Triage; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp),
+            )
             listOf(Screen.Active to Icons.Filled.CheckCircleOutline, Screen.Backlog to Icons.Filled.Inbox, Screen.All to Icons.Filled.List).forEach { (s, icon) ->
                 NavigationDrawerItem(label = { Text(s.title) }, icon = { Icon(icon, null) }, selected = screen == s, onClick = { screen = s; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
             }
@@ -162,6 +176,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                         header = { ProjectScheduleHeader(s.id, s.title) },
                     )
                     Screen.Calendar -> CalendarScreen { detail = it }
+                    Screen.Triage -> TriageScreen(onOpenTask = { detail = it }, onOpenMail = { mail = it })
                     Screen.Settings -> SettingsScreen()
                 }
             }

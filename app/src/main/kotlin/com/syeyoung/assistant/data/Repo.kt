@@ -8,6 +8,7 @@ import com.syeyoung.assistant.api.models.InitiativeResponse
 import com.syeyoung.assistant.api.models.ProjectSchedule
 import com.syeyoung.assistant.api.models.LabelResponse
 import com.syeyoung.assistant.api.models.MailMessage
+import com.syeyoung.assistant.api.models.TriageInputResponse
 import com.syeyoung.assistant.api.models.ProjectResponse
 import com.syeyoung.assistant.api.models.TaskResponse
 import kotlinx.coroutines.async
@@ -86,6 +87,7 @@ class Repo private constructor(private val context: Context) {
                 Snapshot(tasks.await(), projects.await(), labels.await(), initiatives.await(), System.currentTimeMillis())
             }
             _state.value = State(data)
+            refreshTriage()
             runCatching { cacheFile.writeText(AppJson.encodeToString(Snapshot.serializer(), data)) }
             runCatching { onRefreshed?.invoke(data) }
             true
@@ -129,6 +131,30 @@ class Repo private constructor(private val context: Context) {
     suspend fun projectSchedule(id: UUID): ProjectSchedule = api().calendar.projectSchedule(id, 28).value()
 
     suspend fun mailMessage(messageId: String): MailMessage = api().mail.mailMessage(messageId).value()
+
+    // ---- Triage ---------------------------------------------------------------------
+
+    private val _triage = MutableStateFlow<List<TriageInputResponse>>(emptyList())
+    /** Inputs with their suggestions; loaded with every refresh and while the Triage screen is open. */
+    val triage: StateFlow<List<TriageInputResponse>> = _triage
+
+    suspend fun refreshTriage() {
+        runCatching { api().triage.triage().value() }.onSuccess { _triage.value = it }
+    }
+
+    /** Changes Triage on screen at once, sends it, and puts it back if the server refuses. */
+    suspend fun triageAction(change: (List<TriageInputResponse>) -> List<TriageInputResponse>, send: suspend (Api) -> Unit) {
+        val before = _triage.value
+        _triage.value = change(before)
+        try {
+            send(api())
+            refreshTriage()
+            refresh()
+        } catch (e: Exception) {
+            _triage.value = before
+            throw e
+        }
+    }
 
     private fun applyLocally(t: TaskResponse, c: TaskChange): TaskResponse {
         var n = t
