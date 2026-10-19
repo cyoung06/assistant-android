@@ -38,9 +38,9 @@ object Notebooks {
 
     fun copyName(context: Context, uri: Uri) = name(context, uri).removeSuffix(".pdf") + " (notes).pdf"
 
-    /** A blank notebook: [pages] A4 pages with a dot grid (see [BlankPdf]), written to [uri]. */
-    fun writeBlank(context: Context, uri: Uri, pages: Int = 20) {
-        context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(BlankPdf.dotGrid(pages)) }
+    /** A new notebook: [pages] A4 pages in [style] (see [BlankPdf]), written to [uri]. */
+    fun writeBlank(context: Context, uri: Uri, style: PageStyle, pages: Int = 20) {
+        context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(BlankPdf.notebook(pages, style)) }
     }
 
     fun open(context: Context, uri: Uri) {

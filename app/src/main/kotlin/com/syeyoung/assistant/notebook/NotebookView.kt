@@ -162,10 +162,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         return rects.indices.minByOrNull { val r = screenRect(it); abs(r.centerX() - x) + abs(r.centerY() - y) }
     }
 
+    /** Shows page [page] from its top-left, at the current zoom. */
     fun goTo(page: Int, animate: Boolean = true) {
         if (rects.isEmpty()) return
         val p = page.coerceIn(0, rects.size - 1)
-        if (mode == ScrollMode.PAGED) zoom = 1f
+        if (mode == ScrollMode.PAGED) layoutPages()
         val x = if (mode == ScrollMode.PAGED) rangeFor(p).left else scrollXf
         val y = if (mode == ScrollMode.PAGED) rangeFor(p).top else (rects[p].top * zoom - gap).coerceIn(0f, max(0f, contentH * zoom - height))
         if (animate) animateTo(x, y) else { scrollXf = x; scrollYf = y; clampScroll(); afterMove() }
@@ -202,6 +203,25 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         return if (hi >= lo) lo to hi else ((from + to) / 2 * zoom - view / 2).let { it to it }
     }
 
+    /** Search matches to mark, and the one in focus (marked stronger). */
+    var hits: List<SearchHit> = emptyList()
+        set(value) { field = value; invalidate() }
+    var focusedHit: SearchHit? = null
+        set(value) { field = value; invalidate() }
+
+    /** Brings [hit] into the middle of the screen, at the current zoom. */
+    fun show(hit: SearchHit) {
+        if (rects.isEmpty() || hit.page !in rects.indices) return
+        focusedHit = hit
+        val box = hit.boxes.firstOrNull() ?: return goTo(hit.page)
+        val r = rects[hit.page]
+        val s = scales[hit.page] * zoom
+        val cx = r.left * zoom + box.centerX() * s
+        val cy = r.top * zoom + box.centerY() * s
+        val range = if (mode == ScrollMode.PAGED) rangeFor(hit.page) else scrollRange()
+        animateTo((cx - width / 2f).coerceIn(range.left, range.right), (cy - height / 2f).coerceIn(range.top, range.bottom))
+    }
+
     private fun clampScroll() {
         val r = scrollRange()
         scrollXf = scrollXf.coerceIn(r.left, r.right)
@@ -232,6 +252,9 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private val shadowPaint = Paint().apply { color = 0x22000000 }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val drawMatrix = Matrix()
+    private val hitRect = RectF()
+    private val hitPaint = Paint().apply { color = 0x55FFD600 }
+    private val focusPaint = Paint().apply { color = 0x99FF9800.toInt() }
 
     /** Each page once, at the size it has on screen at zoom 1. */
     private val pageBitmaps = HashMap<Int, Bitmap>()
@@ -260,6 +283,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 val y = s.top - (scrollYf - s.scrollY)
                 sharpRect.set(x, y, x + s.bitmap.width, y + s.bitmap.height)
                 canvas.drawBitmap(s.bitmap, null, sharpRect, null)
+            }
+            pageMatrix(i, drawMatrix)
+            for (h in hits) if (h.page == i) for (b in h.boxes) {
+                hitRect.set(b); drawMatrix.mapRect(hitRect)
+                canvas.drawRect(hitRect, if (h === focusedHit) focusPaint else hitPaint)
             }
             canvas.save()
             canvas.clipRect(r)

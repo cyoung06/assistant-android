@@ -34,6 +34,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.syeyoung.assistant.notebook.Notebooks
+import com.syeyoung.assistant.notebook.PageStyle
+import com.syeyoung.assistant.notebook.StylePicker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -50,18 +52,30 @@ fun NotebooksScreen() {
     LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { recent = Notebooks.recent(context) } }
 
     val openPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { Notebooks.open(context, it) } }
+    // A new notebook asks for its page style first, then where to save it.
+    var choosing by remember { mutableStateOf(false) }
+    var style by remember { mutableStateOf(PageStyle.DOTS) }
     val newNotebook = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         if (uri != null) scope.launch {
-            withContext(Dispatchers.IO) { Notebooks.writeBlank(context, uri) }
+            withContext(Dispatchers.IO) { Notebooks.writeBlank(context, uri, style) }
             Notebooks.open(context, uri)
         }
+    }
+    if (choosing) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { choosing = false },
+            title = { Text("New notebook") },
+            text = { StylePicker(style) { style = it } },
+            confirmButton = { androidx.compose.material3.TextButton({ choosing = false; newNotebook.launch("Notebook.pdf") }) { Text("Choose where to save") } },
+            dismissButton = { androidx.compose.material3.TextButton({ choosing = false }) { Text("Cancel") } },
+        )
     }
 
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button({ openPdf.launch(arrayOf("application/pdf")) }) { Text("Open PDF…") }
-                OutlinedButton({ newNotebook.launch("Notebook.pdf") }) { Text("New notebook") }
+                OutlinedButton({ choosing = true }) { Text("New notebook") }
             }
             if (recent.isEmpty()) {
                 Text(

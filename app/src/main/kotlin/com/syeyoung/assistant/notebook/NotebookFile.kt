@@ -138,19 +138,27 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
         out.delete()
     }
 
-    /** Inserts a blank page (the size of page [after]) after it; -1 puts it first. */
-    fun insertPage(after: Int) = edit { doc ->
-        val ref = doc.getPage(after.coerceAtLeast(0))
-        val page = PDPage(PDRectangle(ref.mediaBox.lowerLeftX, ref.mediaBox.lowerLeftY, ref.mediaBox.width, ref.mediaBox.height))
-        page.cropBox = ref.cropBox
-        if (after < 0) doc.pages.insertBefore(page, ref) else doc.pages.insertAfter(page, ref)
+    /** Inserts a page in [style], the size of page [ref], after page [after] (-1 puts it first). */
+    fun insertPage(after: Int, ref: Int, style: PageStyle) = edit { doc ->
+        val size = doc.getPage(ref.coerceIn(0, doc.numberOfPages - 1)).cropBox
+        PDDocument.load(BlankPdf.notebook(1, style, size.width, size.height)).use { template ->
+            val page = doc.importPage(template.getPage(0))
+            // importPage adds it at the end; move it into place.
+            if (after < doc.numberOfPages - 2) {
+                doc.pages.remove(page)
+                if (after < 0) doc.pages.insertBefore(page, doc.getPage(0)) else doc.pages.insertAfter(page, doc.getPage(after))
+            }
+            doc.save(File(base.parentFile, "edit.pdf"))
+        }
     }
 
     fun deletePage(index: Int) = edit { doc -> doc.removePage(index) }
 
+    /** Applies [change] to the base; it may save to edit.pdf itself (while what it imported is still open). */
     private fun edit(change: (PDDocument) -> Unit) {
         val out = File(base.parentFile, "edit.pdf")
-        load(base).use { doc -> change(doc); doc.save(out) }
+        out.delete()
+        load(base).use { doc -> change(doc); if (!out.exists()) doc.save(out) }
         out.renameTo(base)
     }
 

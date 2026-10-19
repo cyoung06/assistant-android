@@ -29,7 +29,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.ink.authoring.InProgressStrokesView
 import androidx.lifecycle.lifecycleScope
@@ -80,12 +83,17 @@ class NotebookActivity : ComponentActivity() {
                 val changed = { ui.applyTo(view); ui.save(prefs()) }
                 Box(Modifier.fillMaxSize()) {
                     Column(Modifier.fillMaxSize()) {
-                        NotebookHeader(ui, title, onBack = ::finish, onAddPage = ::addPage, onChange = { changed(); scheduleSave() })
+                        NotebookHeader(ui, title, onBack = ::finish, onSearch = ::search, onHit = ::showHit, onChange = { changed(); scheduleSave() })
                         Box(Modifier.fillMaxWidth().weight(1f)) {
                             AndroidView({ stack }, Modifier.fillMaxSize())
                             NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo)
+                            if (ui.searching) Box(Modifier.align(Alignment.TopEnd).padding(end = 8.dp)) { SearchResults(ui, ::showHit) }
+                            if (ui.quickPages) Box(Modifier.align(Alignment.BottomCenter)) {
+                                QuickPages(ui, ::thumbnail, onGo = { view.goTo(it) }, onAll = { ui.quickPages = false; ui.browsing = true })
+                            }
                         }
                     }
+                    if (ui.addingPage) AddPageDialog(ui) { style, atEnd -> addPage(style, atEnd); ui.save(prefs()) }
                     if (ui.browsing) PageBrowser(ui, ::thumbnail, onGo = { view.goTo(it, animate = false) }, onChange = { scheduleSave() })
                     Dialogs()
                 }
@@ -173,9 +181,40 @@ class NotebookActivity : ComponentActivity() {
         }
     }
 
-    private fun addPage() {
+    private fun addPage(style: PageStyle, atEnd: Boolean) {
         val at = view.currentPage
-        pageEdit({ it.insertPage(at) }, land = at + 1) { old -> if (old > at) old + 1 else old }
+        val after = if (atEnd) view.pageCount - 1 else at
+        pageEdit({ it.insertPage(after, ref = at, style = style) }, land = after + 1) { old -> if (old > after) old + 1 else old }
+    }
+
+    // ---- search over the PDF's text ----
+
+    private var text: List<PageText>? = null
+    private var searchJob: Job? = null
+
+    private fun search(query: String) {
+        searchJob?.cancel()
+        if (query.isBlank()) { ui.hits = emptyList(); view.hits = emptyList(); view.focusedHit = null; return }
+        val f = file ?: return
+        searchJob = lifecycleScope.launch {
+            delay(200)
+            val pages = text ?: run {
+                ui.searchIndexing = true
+                withContext(Dispatchers.IO) { io.withLock { runCatching { TextSearch.extract(f.base) }.getOrDefault(emptyList()) } }.also { text = it; ui.searchIndexing = false }
+            }
+            val hits = withContext(Dispatchers.Default) { TextSearch.find(pages, query) }
+            ui.hits = hits
+            view.hits = hits
+            // Start from the first match at or after the page on screen.
+            val first = hits.indexOfFirst { it.page >= view.currentPage }.let { if (it < 0) 0 else it }
+            if (hits.isNotEmpty()) showHit(first) else view.focusedHit = null
+        }
+    }
+
+    private fun showHit(k: Int) {
+        val h = ui.hits.getOrNull(k) ?: return
+        ui.hitIndex = k
+        view.show(h)
     }
 
     private fun deletePage() {
@@ -192,6 +231,9 @@ class NotebookActivity : ComponentActivity() {
                 .getOrElse { e -> Toast.makeText(this@NotebookActivity, "Couldn't change pages: ${e.message}", Toast.LENGTH_LONG).show(); return@launch }
             view.pagesChanged(sizes, moved)
             ui.bookmarks = ui.bookmarks.mapNotNull(moved).toSet()
+            // Page numbers changed: the text is read again on the next search.
+            text = null
+            if (ui.query.isNotBlank()) search(ui.query)
             view.goTo(land.coerceIn(0, sizes.size - 1))
             scheduleSave(now = true)
         }
@@ -239,6 +281,14 @@ class ToolbarState {
     var confirmDelete by mutableStateOf(false)
     var jumping by mutableStateOf(false)
     var browsing by mutableStateOf(false)
+    var quickPages by mutableStateOf(false)
+    var addingPage by mutableStateOf(false)
+    var pageStyle by mutableStateOf(PageStyle.DOTS)
+    var searching by mutableStateOf(false)
+    var query by mutableStateOf("")
+    var hits by mutableStateOf<List<SearchHit>>(emptyList())
+    var hitIndex by mutableIntStateOf(0)
+    var searchIndexing by mutableStateOf(false)
     var bookmarks by mutableStateOf<Set<Int>>(emptySet())
     var needsCopy by mutableStateOf(false)
 
@@ -263,11 +313,12 @@ class ToolbarState {
         edge = runCatching { Edge.valueOf(p.getString("edge", "TOP")!!) }.getOrDefault(Edge.TOP)
         along = p.getFloat("along", 0.5f)
         collapsed = p.getBoolean("collapsed", false)
+        pageStyle = runCatching { PageStyle.valueOf(p.getString("pageStyle", "DOTS")!!) }.getOrDefault(PageStyle.DOTS)
     }
 
     fun save(p: SharedPreferences) {
         p.edit().putString("tool", tool.name).putInt("penColor", penColor).putFloat("penWidth", penWidth)
             .putInt("hlColor", highlighterColor).putFloat("hlWidth", highlighterWidth).putFloat("eraserRadius", eraserRadius).putString("scroll", mode.name)
-            .putString("edge", edge.name).putFloat("along", along).putBoolean("collapsed", collapsed).apply()
+            .putString("edge", edge.name).putFloat("along", along).putBoolean("collapsed", collapsed).putString("pageStyle", pageStyle.name).apply()
     }
 }
