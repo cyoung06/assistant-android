@@ -63,6 +63,8 @@ class NotebookActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Diagnostics (adb only): how PdfRenderer places a page under a transform with an offset.
+        if (intent.getBooleanExtra("renderTest", false)) { RenderTest.run(this); return finish() }
         val uri = intent.data ?: return finish()
         Notebooks.remember(this, uri)
         title = Notebooks.name(this, uri)
@@ -114,6 +116,20 @@ class NotebookActivity : ComponentActivity() {
                 file = opened.file
                 ui.bookmarks = opened.bookmarks
                 view.setDocument(sizes, opened.strokes)
+                // Diagnostics (adb only): open at a given zoom.
+                view.sharpEnabled = intent.getBooleanExtra("sharp", true)
+                view.sharpDelay = intent.getLongExtra("sharpDelay", 140L)
+                intent.getFloatExtra("zoom", 0f).takeIf { it > 0f }?.let { z -> view.post { view.zoomForTest(z) } }
+                // Diagnostics (adb only): zoom slowly, as a long pinch would.
+                intent.getFloatExtra("zoomTo", 0f).takeIf { it > 0f }?.let { z ->
+                    view.postDelayed({
+                        android.animation.ValueAnimator.ofFloat(1f, z).apply {
+                            duration = 8000
+                            addUpdateListener { view.zoomForTest(it.animatedValue as Float) }
+                            start()
+                        }
+                    }, 1500)
+                }
                 ui.status = ""
             }.onFailure { e ->
                 Toast.makeText(this@NotebookActivity, "Couldn't open this PDF: ${e.message}", Toast.LENGTH_LONG).show()

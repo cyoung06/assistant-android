@@ -203,6 +203,20 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         return if (hi >= lo) lo to hi else ((from + to) / 2 * zoom - view / 2).let { it to it }
     }
 
+    /** Diagnostics: zoom about the screen's centre, as a pinch there would. */
+    fun zoomForTest(z: Float) {
+        if (rects.isEmpty()) return
+        val page = currentPage
+        val pt = floatArrayOf(width / 2f, height / 2f)
+        Matrix().also { pageMatrix(page).invert(it) }.mapPoints(pt)
+        zoom = z
+        if (mode == ScrollMode.PAGED) layoutPages()
+        val r = rects[page]
+        scrollXf = r.left * zoom + pt[0] * scales[page] * zoom - width / 2f
+        scrollYf = r.top * zoom + pt[1] * scales[page] * zoom - height / 2f
+        clampScroll(); afterMove()
+    }
+
     /** Search matches to mark, and the one in focus (marked stronger). */
     var hits: List<SearchHit> = emptyList()
         set(value) { field = value; invalidate() }
@@ -315,10 +329,13 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         }
     }
 
-    private val sharpRequest = Runnable { renderSharp() }
+    /** Diagnostics: off to see the plain page alone. */
+    var sharpEnabled = true
+    var sharpDelay = 140L
+    private val sharpRequest = Runnable { if (sharpEnabled) renderSharp() }
     private fun scheduleSharp() {
         removeCallbacks(sharpRequest)
-        if (zoom > 1.05f) postDelayed(sharpRequest, 140) else if (sharp.isNotEmpty()) { sharp.values.forEach { it.bitmap.recycle() }; sharp.clear() }
+        if (zoom > 1.05f) postDelayed(sharpRequest, sharpDelay) else if (sharp.isNotEmpty()) { sharp.values.forEach { it.bitmap.recycle() }; sharp.clear() }
     }
 
     /** A sharp render of the part of the current page that's on screen (neighbours peeking in stay as they are). */
@@ -462,9 +479,14 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             val r = rects[page]
             scrollXf = r.left * zoom + pt[0] * scales[page] * zoom - d.focusX
             scrollYf = r.top * zoom + pt[1] * scales[page] * zoom - d.focusY
-            clampScroll(); afterMove()
+            // No clamping while pinching (it pulled the page from under the fingers, a jump on
+            // every frame near an edge); it eases back in bounds when the fingers lift.
+            pinched = true
+            afterMove()
             return true
         }
+
+        override fun onScaleEnd(d: ScaleGestureDetector) { dragPage = currentPage }
     }).apply {
         // Double-tap-and-drag zoom: quick successive flicks set it off, and the page jumped mid-scroll.
         isQuickScaleEnabled = false
@@ -536,11 +558,19 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         }
     })
 
+    private var pinched = false
+
     private fun fingers(e: MotionEvent) {
-        if (e.actionMasked == MotionEvent.ACTION_DOWN) flingHandled = false
+        if (e.actionMasked == MotionEvent.ACTION_DOWN) { flingHandled = false; pinched = false }
         scale.onTouchEvent(e)
-        if (!scale.isInProgress) gestures.onTouchEvent(e)
-        if ((e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) && mode == ScrollMode.PAGED && !flingHandled) settlePaged()
+        // A pinch isn't also a scroll or fling.
+        if (!scale.isInProgress && !pinched) gestures.onTouchEvent(e)
+        if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) {
+            when {
+                mode == ScrollMode.PAGED && (pinched || !flingHandled) -> settlePaged()
+                pinched -> { val r = scrollRange(); animateTo(scrollXf.coerceIn(r.left, r.right), scrollYf.coerceIn(r.top, r.bottom)) }
+            }
+        }
     }
 
     /** After a drag (page by page): turn if pulled far enough onto a neighbour, else spring back. */
@@ -549,7 +579,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         val r = rangeFor(dragPage)
         val overX = scrollXf - scrollXf.coerceIn(r.left, r.right)
         when {
-            canTurn && abs(overX) > width * 0.18f && dragPage + sign(overX) in rects.indices -> turnHorizontal(dragPage + sign(overX))
+            !pinched && canTurn && abs(overX) > width * 0.18f && dragPage + sign(overX) in rects.indices -> turnHorizontal(dragPage + sign(overX))
             else -> animateTo(scrollXf.coerceIn(r.left, r.right), scrollYf.coerceIn(r.top, r.bottom))
         }
     }

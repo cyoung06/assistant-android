@@ -9,11 +9,11 @@ import java.io.File
 
 class BlankPdfTest {
     @Test
-    fun `every style makes a small notebook with a correct cross-reference table`() {
+    fun `every style makes a small notebook (vector, compressed) with a correct cross-reference table`() {
         for (style in PageStyle.entries) {
             val pdf = BlankPdf.notebook(20, style)
-            assertTrue("$style size ${pdf.size}", pdf.size < 8_000)
-            val text = String(pdf, Charsets.US_ASCII)
+            assertTrue("$style size ${pdf.size}", pdf.size < 16_000)
+            val text = String(pdf, Charsets.ISO_8859_1)
             assertEquals(20, Regex("/Type /Page /").findAll(text).count())
             // Every xref entry points at the start of its object.
             val xref = text.substring(text.lastIndexOf("startxref") + 10).trim().lines().first().toInt()
