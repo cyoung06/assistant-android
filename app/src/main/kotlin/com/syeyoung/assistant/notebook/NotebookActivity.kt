@@ -1,166 +1,253 @@
 package com.syeyoung.assistant.notebook
 
-import android.app.AlertDialog
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
+import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
-import android.os.ParcelFileDescriptor
-import android.os.ext.SdkExtensions
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.Toast
-import androidx.activity.OnBackPressedCallback
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import android.annotation.SuppressLint
-import androidx.annotation.RequiresExtension
-import androidx.fragment.app.FragmentActivity
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.ink.authoring.InProgressStrokesView
 import androidx.lifecycle.lifecycleScope
-import androidx.pdf.PdfWriteHandle
-import androidx.pdf.ExperimentalPdfApi
-import androidx.pdf.ink.EditablePdfViewerFragment
-import androidx.pdf.viewer.fragment.PdfViewerFragment
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.File
+import kotlin.math.roundToInt
 
 /**
- * A PDF to write on with the pen (course material or a blank notebook), using Jetpack PDF's
- * editable viewer: pen, highlighter, eraser and undo, saved into the PDF as standard annotations,
- * so any PDF reader shows them. Opens a PDF given to it ("Open with") or picked in Notebooks.
+ * Writing on a PDF (course material or a notebook): the pen writes, fingers move through pages,
+ * and a slim toolbar can be dragged to any edge. The writing is saved into the PDF as you go.
  */
-class NotebookActivity : FragmentActivity() {
-    private lateinit var uri: Uri
-    private lateinit var save: Button
-    private val editor get() = supportFragmentManager.findFragmentById(CONTAINER) as? NotebookFragment
-
-    /** Where to write when the PDF we were given can't be written back (opened read-only). */
-    private val saveCopy = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { dest ->
-        val f = pendingCopy ?: return@registerForActivityResult
-        pendingCopy = null
-        if (dest != null) lifecycleScope.launch { copyOut(f, dest); open(dest) }
-    }
-    private var pendingCopy: File? = null
+class NotebookActivity : ComponentActivity() {
+    private lateinit var view: NotebookView
+    private val renderer = PageRenderer()
+    private var file: NotebookFile? = null
+    private val io = Mutex()
+    private var dirty = false
+    private var saveJob: Job? = null
+    private val ui = ToolbarState()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        uri = intent.data ?: return finish()
+        val uri = intent.data ?: return finish()
         Notebooks.remember(this, uri)
+        ui.load(prefs())
 
-        val root = FrameLayout(this)
-        root.addView(FrameLayout(this).apply { id = CONTAINER }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        save = Button(this).apply {
-            text = "Save"
-            visibility = View.GONE
-            setOnClickListener { editor?.applyDraftEdits() }
+        val ink = InProgressStrokesView(this)
+        view = NotebookView(this, ink, renderer).apply {
+            onInkChanged = { scheduleSave() }
+            onPageChanged = { p, n -> ui.page = p; ui.pages = n }
+            onUndoChanged = { u, r -> ui.canUndo = u; ui.canRedo = r }
         }
-        root.addView(save, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { setMargins(0, 48, 32, 0) })
-        setContentView(root)
-
-        if (savedInstanceState == null) {
-            @SuppressLint("NewApi") // checked by canAnnotate()
-            val fragment = if (canAnnotate()) NotebookFragment() else ReadOnlyFragment().also {
-                Toast.makeText(this, "Writing on PDFs needs a newer Android system update; showing it read-only.", Toast.LENGTH_LONG).show()
-            }
-            supportFragmentManager.beginTransaction().replace(CONTAINER, fragment).commitNow()
-            fragment.documentUri = uri
+        ui.applyTo(view)
+        val stack = FrameLayout(this).apply {
+            addView(view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(ink, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
 
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                val e = editor
-                if (e == null || !e.hasUnsavedChanges) return finish()
-                AlertDialog.Builder(this@NotebookActivity)
-                    .setTitle("Save your writing?")
-                    .setPositiveButton("Save") { _, _ -> closeAfterSave = true; e.applyDraftEdits() }
-                    .setNegativeButton("Discard") { _, _ -> finish() }
-                    .setNeutralButton("Cancel", null)
-                    .show()
+        setContent {
+            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+                Box(Modifier.fillMaxSize()) {
+                    AndroidView({ stack }, Modifier.fillMaxSize())
+                    NotebookToolbar(
+                        ui,
+                        onChange = { ui.applyTo(view); ui.save(prefs()) },
+                        onUndo = view::undo,
+                        onRedo = view::redo,
+                        onAddPage = ::addPage,
+                        onDeletePage = { ui.confirmDelete = true },
+                        onJump = { ui.jumping = true },
+                        onClose = ::finish,
+                    )
+                    Dialogs()
+                }
             }
-        })
-    }
+        }
 
-    private var closeAfterSave = false
-
-    fun editing(on: Boolean) { save.visibility = if (on) View.VISIBLE else View.GONE }
-
-    /** The edits as a new PDF: written to a temporary file first, then over the original. */
-    @OptIn(ExperimentalPdfApi::class)
-    fun write(handle: PdfWriteHandle) {
         lifecycleScope.launch {
-            val tmp = File(cacheDir, "notebook-${System.nanoTime()}.pdf")
-            try {
-                ParcelFileDescriptor.open(tmp, ParcelFileDescriptor.MODE_READ_WRITE or ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE).use { handle.writeTo(it) }
-            } catch (e: Exception) {
-                failed(e)
-                return@launch
-            } finally {
-                handle.close()
-            }
-            editor?.isEditModeEnabled = false
-            try {
-                copyOut(tmp, uri)
-                if (closeAfterSave) finish() else editor?.documentUri = uri
-            } catch (e: SecurityException) {
-                // Opened read-only (e.g. from a mail or a download): keep it as a copy.
-                pendingCopy = tmp
-                saveCopy.launch(Notebooks.copyName(this@NotebookActivity, uri))
+            ui.status = "Opening…"
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val (f, strokes) = NotebookFile.open(this@NotebookActivity, uri) { InkIds.next() }
+                    Triple(f, strokes, renderer.open(f.base))
+                }
+            }.onSuccess { (f, strokes, sizes) ->
+                file = f
+                view.setDocument(sizes, strokes)
+                ui.status = ""
+            }.onFailure { e ->
+                Toast.makeText(this@NotebookActivity, "Couldn't open this PDF: ${e.message}", Toast.LENGTH_LONG).show()
+                finish()
             }
         }
     }
 
-    /** The PDF couldn't be opened: say so (instead of loading forever), and keep the cause for the crash report the app uploads. */
-    fun loadFailed(e: Throwable) {
-        runCatching {
-            val trace = java.io.StringWriter().also { e.printStackTrace(java.io.PrintWriter(it)) }
-            com.syeyoung.assistant.data.Crashes.file(this).appendText("--- ${java.time.Instant.now()} notebook couldn't open ${Notebooks.name(this, uri)} (canAnnotate=${canAnnotate()})\n$trace\n")
+    @Composable
+    private fun Dialogs() {
+        if (ui.confirmDelete) {
+            AlertDialog(
+                onDismissRequest = { ui.confirmDelete = false },
+                title = { Text("Delete page ${ui.page + 1}?") },
+                text = { Text("The page and its writing go. This can't be undone.") },
+                confirmButton = { TextButton({ ui.confirmDelete = false; deletePage() }) { Text("Delete") } },
+                dismissButton = { TextButton({ ui.confirmDelete = false }) { Text("Cancel") } },
+            )
         }
-        AlertDialog.Builder(this)
-            .setTitle("Couldn't open this PDF")
-            .setMessage(e.message ?: e.javaClass.simpleName)
-            .setPositiveButton("Close") { _, _ -> finish() }
-            .setOnCancelListener { finish() }
-            .show()
+        if (ui.jumping) {
+            var target by remember { mutableFloatStateOf(ui.page.toFloat()) }
+            AlertDialog(
+                onDismissRequest = { ui.jumping = false },
+                title = { Text("Page ${target.roundToInt() + 1} of ${ui.pages}") },
+                text = { if (ui.pages > 1) Slider(target, { target = it }, valueRange = 0f..(ui.pages - 1).toFloat(), steps = (ui.pages - 2).coerceAtLeast(0)) },
+                confirmButton = { TextButton({ ui.jumping = false; view.goTo(target.roundToInt()) }) { Text("Go") } },
+                dismissButton = { TextButton({ ui.jumping = false }) { Text("Cancel") } },
+            )
+        }
+        // A read-only PDF (a mail attachment, a download): its writing goes into a copy.
+        val copy = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { dest ->
+            if (dest != null) {
+                file?.uri = dest
+                Notebooks.remember(this, dest)
+                scheduleSave(now = true)
+            }
+        }
+        LaunchedEffect(ui.needsCopy) {
+            val f = file
+            if (ui.needsCopy && f != null) { ui.needsCopy = false; copy.launch(Notebooks.copyName(this@NotebookActivity, f.uri)) }
+        }
     }
 
-    fun failed(e: Throwable) {
-        closeAfterSave = false
-        Toast.makeText(this, "Couldn't save: ${e.message}", Toast.LENGTH_LONG).show()
+    private fun prefs(): SharedPreferences = getSharedPreferences("notebooks", Context.MODE_PRIVATE)
+
+    private fun scheduleSave(now: Boolean = false) {
+        dirty = true
+        saveJob?.cancel()
+        saveJob = lifecycleScope.launch {
+            if (!now) delay(1500)
+            save()
+        }
     }
 
-    private suspend fun copyOut(from: File, to: Uri) = withContext(Dispatchers.IO) {
-        contentResolver.openOutputStream(to, "wt")!!.use { out -> from.inputStream().use { it.copyTo(out) } }
-        from.delete()
+    private suspend fun save() {
+        val f = file ?: return
+        if (!dirty) return
+        val strokes = view.strokesSnapshot()
+        dirty = false
+        ui.status = "Saving…"
+        val result = withContext(Dispatchers.IO) { io.withLock { runCatching { f.save(strokes) } } }
+        result.onSuccess { ui.status = "" }.onFailure { e ->
+            dirty = true
+            ui.status = "Not saved"
+            if (e is SecurityException) ui.needsCopy = true
+            else Toast.makeText(this, "Couldn't save: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
-    private fun open(dest: Uri) {
-        startActivity(Intent(this, NotebookActivity::class.java).setData(dest).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
-        finish()
+    private fun addPage() {
+        val at = view.currentPage
+        pageEdit({ it.insertPage(at) }, land = at + 1) { old -> if (old > at) old + 1 else old }
     }
 
-    companion object {
-        private val CONTAINER = View.generateViewId()
+    private fun deletePage() {
+        if (view.pageCount <= 1) return
+        val at = view.currentPage
+        pageEdit({ it.deletePage(at) }, land = at) { old -> when { old == at -> null; old > at -> old - 1; else -> old } }
+    }
 
-        /** Jetpack PDF's editing needs SDK extension 18 (a recent Android system update). */
-        fun canAnnotate() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 18
+    /** Changes the pages, then shows the result at page [land]; [moved] says where each old page went. */
+    private fun pageEdit(change: (NotebookFile) -> Unit, land: Int, moved: (Int) -> Int?) {
+        val f = file ?: return
+        lifecycleScope.launch {
+            val sizes = runCatching { withContext(Dispatchers.IO) { io.withLock { change(f); renderer.open(f.base) } } }
+                .getOrElse { e -> Toast.makeText(this@NotebookActivity, "Couldn't change pages: ${e.message}", Toast.LENGTH_LONG).show(); return@launch }
+            view.pagesChanged(sizes, moved)
+            view.goTo(land.coerceIn(0, sizes.size - 1))
+            scheduleSave(now = true)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (dirty) lifecycleScope.launch { save() }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        renderer.close()
     }
 }
 
-@OptIn(ExperimentalPdfApi::class)
-@RequiresExtension(extension = Build.VERSION_CODES.S, version = 18)
-class NotebookFragment : EditablePdfViewerFragment() {
-    private val host get() = activity as? NotebookActivity
-    override fun onEnterEditMode() { host?.editing(true) }
-    override fun onExitEditMode() { host?.editing(false) }
-    override fun onApplyEditsSuccess(handle: PdfWriteHandle) { host?.write(handle) ?: handle.close() }
-    override fun onApplyEditsFailed(error: Throwable) { host?.failed(error) }
-    override fun onLoadDocumentError(error: Throwable) { host?.loadFailed(error) }
-}
+/** The toolbar's state: tool, colours and sizes (remembered), where it sits, and page info. */
+class ToolbarState {
+    var tool by mutableStateOf(Tool.PEN)
+    var penColor by mutableIntStateOf(0)
+    var penSize by mutableIntStateOf(1)
+    var highlighterColor by mutableIntStateOf(0)
+    var highlighterSize by mutableIntStateOf(1)
+    var mode by mutableStateOf(ScrollMode.PAGED)
+    var edge by mutableStateOf(Edge.TOP)
+    var along by mutableFloatStateOf(0.5f)
+    var collapsed by mutableStateOf(false)
 
-class ReadOnlyFragment : PdfViewerFragment() {
-    override fun onLoadDocumentError(error: Throwable) { (activity as? NotebookActivity)?.loadFailed(error) }
+    var page by mutableIntStateOf(0)
+    var pages by mutableIntStateOf(0)
+    var canUndo by mutableStateOf(false)
+    var canRedo by mutableStateOf(false)
+    var status by mutableStateOf("")
+    var confirmDelete by mutableStateOf(false)
+    var jumping by mutableStateOf(false)
+    var needsCopy by mutableStateOf(false)
+
+    fun applyTo(v: NotebookView) {
+        v.tool = tool
+        v.penColor = PEN_COLORS[penColor]
+        v.penSize = PEN_SIZES[penSize]
+        v.highlighterColor = HIGHLIGHTER_COLORS[highlighterColor]
+        v.highlighterSize = HIGHLIGHTER_SIZES[highlighterSize]
+        v.mode = mode
+    }
+
+    fun load(p: SharedPreferences) {
+        tool = runCatching { Tool.valueOf(p.getString("tool", "PEN")!!) }.getOrDefault(Tool.PEN)
+        penColor = p.getInt("penColor", 0).coerceIn(PEN_COLORS.indices)
+        penSize = p.getInt("penSize", 1).coerceIn(PEN_SIZES.indices)
+        highlighterColor = p.getInt("hlColor", 0).coerceIn(HIGHLIGHTER_COLORS.indices)
+        highlighterSize = p.getInt("hlSize", 1).coerceIn(HIGHLIGHTER_SIZES.indices)
+        mode = runCatching { ScrollMode.valueOf(p.getString("scroll", "PAGED")!!) }.getOrDefault(ScrollMode.PAGED)
+        edge = runCatching { Edge.valueOf(p.getString("edge", "TOP")!!) }.getOrDefault(Edge.TOP)
+        along = p.getFloat("along", 0.5f)
+        collapsed = p.getBoolean("collapsed", false)
+    }
+
+    fun save(p: SharedPreferences) {
+        p.edit().putString("tool", tool.name).putInt("penColor", penColor).putInt("penSize", penSize)
+            .putInt("hlColor", highlighterColor).putInt("hlSize", highlighterSize).putString("scroll", mode.name)
+            .putString("edge", edge.name).putFloat("along", along).putBoolean("collapsed", collapsed).apply()
+    }
 }

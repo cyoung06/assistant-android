@@ -3,6 +3,4 @@
     <style name="Theme.Assistant" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/background</item>
     </style>
-    <!-- Jetpack PDF's viewer and pen toolbar are Material Components views. -->
-    <style name="Theme.Assistant.Notebook" parent="Theme.Material3.DayNight.NoActionBar" />
 </resources>

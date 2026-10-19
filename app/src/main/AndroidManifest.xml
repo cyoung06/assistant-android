@@ -63,7 +63,7 @@
             android:name=".notebook.NotebookActivity"
             android:exported="true"
             android:label="Assistant"
-            android:theme="@style/Theme.Assistant.Notebook">
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

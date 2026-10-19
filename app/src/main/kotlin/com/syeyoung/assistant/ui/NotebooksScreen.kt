@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
-import com.syeyoung.assistant.notebook.NotebookActivity
 import com.syeyoung.assistant.notebook.Notebooks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -64,15 +63,9 @@ fun NotebooksScreen() {
                 Button({ openPdf.launch(arrayOf("application/pdf")) }) { Text("Open PDF…") }
                 OutlinedButton({ newNotebook.launch("Notebook.pdf") }) { Text("New notebook") }
             }
-            if (!NotebookActivity.canAnnotate()) {
-                Text(
-                    "This device's Android system is too old for writing on PDFs (needs SDK extension 18); PDFs open read-only.",
-                    Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
-                )
-            }
             if (recent.isEmpty()) {
                 Text(
-                    "Open a course PDF to write on it, or start a blank notebook. Writing is saved into the PDF itself, so any PDF reader shows it.",
+                    "Open a course PDF to write on it, or start a blank notebook. Write with the pen, move with your fingers. Writing is saved into the PDF itself as you go, so any PDF reader shows it.",
                     Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
