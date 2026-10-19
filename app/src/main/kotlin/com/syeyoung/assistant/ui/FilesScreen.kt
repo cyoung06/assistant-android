@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.foundation.indication
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import kotlinx.coroutines.withTimeoutOrNull
@@ -220,7 +221,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             busy = "Uploading…"
-            for (u in uris) runCatching { uploadInto(context, repo, path, u) }.onFailure { Toast.makeText(context, "Couldn't upload: ${it.message}", Toast.LENGTH_LONG).show() }
+            for (u in uris) runCatching { uploadInto(context, repo, if (DriveProvider.readOnly(path)) root else path, u) }.onFailure { Toast.makeText(context, "Couldn't upload: ${it.message}", Toast.LENGTH_LONG).show() }
             busy = null
             FilesNav.changes++
         }
@@ -298,12 +299,15 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
     }
 
     // New things here: a notebook (opened to write in), uploaded files, or a folder.
-    if (!locked) Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+    // New things go into the folder shown (or, in Course files, which take none, the project's own).
+    val here = if (locked) root else path
+    val where = if (locked) " in $rootName" else ""
+    Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
         androidx.compose.material3.FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New") }
         androidx.compose.material3.DropdownMenu(creating, { creating = false }) {
-            androidx.compose.material3.DropdownMenuItem({ Text("New notebook") }, { creating = false; notebook = true }, leadingIcon = { Icon(Icons.Filled.EditNote, null) })
-            androidx.compose.material3.DropdownMenuItem({ Text("Upload files") }, { creating = false; upload.launch(arrayOf("*/*")) }, leadingIcon = { Icon(Icons.Filled.Upload, null) })
-            androidx.compose.material3.DropdownMenuItem({ Text("New folder") }, { creating = false; naming = true }, leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
+            androidx.compose.material3.DropdownMenuItem({ Text("New notebook$where") }, { creating = false; notebook = true }, leadingIcon = { Icon(Icons.Filled.EditNote, null) })
+            androidx.compose.material3.DropdownMenuItem({ Text("Upload files$where") }, { creating = false; upload.launch(arrayOf("*/*")) }, leadingIcon = { Icon(Icons.Filled.Upload, null) })
+            androidx.compose.material3.DropdownMenuItem({ Text("New folder$where") }, { creating = false; naming = true }, leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
         }
     }
     }
@@ -312,7 +316,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
         notebook = false
         if (title != null) scope.launch {
             busy = "Making the notebook…"
-            runCatching { createNotebook(context, repo, path, title, style) }
+            runCatching { createNotebook(context, repo, if (DriveProvider.readOnly(path)) root else path, title, style) }
                 .onSuccess { Notebooks.open(context, DriveProvider.uri(context, it)) }
                 .onFailure { Toast.makeText(context, "Couldn't make the notebook: ${it.message}", Toast.LENGTH_LONG).show() }
             busy = null
@@ -321,7 +325,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
     }
     if (naming) NameDialog("New folder", "") { name ->
         naming = false
-        if (name != null) scope.launch { runCatching { repo.api().driveMakeFolder(path + name + "/") }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }; FilesNav.changes++ }
+        if (name != null) scope.launch { runCatching { repo.api().driveMakeFolder((if (DriveProvider.readOnly(path)) root else path) + name + "/") }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }; FilesNav.changes++ }
     }
     menuFor?.let { e ->
         var renaming by remember { mutableStateOf(false) }
@@ -414,11 +418,18 @@ private const val DRAG_PREFIX = "assistant-drive:"
  * An entry's touches: tap to open; long-press for its menu, or long-press and drag to move it;
  * double-tap and drag to copy it (another pane, a folder, or another app).
  */
-private fun Modifier.driveGestures(onTap: () -> Unit, onMenu: () -> Unit, onDrag: (copy: Boolean) -> Unit) = this.then(
-    Modifier.pointerInput(Unit) {
+@Composable
+private fun Modifier.driveGestures(onTap: () -> Unit, onMenu: () -> Unit, onDrag: (copy: Boolean) -> Unit): Modifier {
+    val presses = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val scope = rememberCoroutineScope()
+    return this.then(Modifier.indication(presses, androidx.compose.material3.ripple())).then(Modifier.pointerInput(Unit) {
         val slop = viewConfiguration.touchSlop
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
+            // Shown pressed while touched (released however the touch ends).
+            val press = androidx.compose.foundation.interaction.PressInteraction.Press(down.position)
+            scope.launch { presses.emit(press) }
+            try {
             // Until it's held long enough: let go (a tap), or moved away (a scroll, not ours).
             val first = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
                 while (true) {
@@ -446,9 +457,12 @@ private fun Modifier.driveGestures(onTap: () -> Unit, onMenu: () -> Unit, onDrag
                 }
                 false -> {}
             }
+            } finally {
+                scope.launch { presses.emit(androidx.compose.foundation.interaction.PressInteraction.Release(press)) }
+            }
         }
-    },
-)
+    })
+}
 
 /** Starts a system drag of [e]: its URI (so other apps can take it) and what to do with it here. */
 private fun startDriveDrag(view: android.view.View, context: Context, e: DriveEntry, copy: Boolean) {
