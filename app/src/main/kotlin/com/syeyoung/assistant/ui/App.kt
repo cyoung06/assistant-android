@@ -191,7 +191,8 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                 when (screen) {
                     Screen.Settings, Screen.Initiatives, is Screen.Initiative, Screen.Notebooks, Screen.Files -> {}
                     Screen.Calendar -> FloatingActionButton({ event = EventTarget.New(calendarDay) }) { Icon(Icons.Filled.Add, "New event") }
-                    else -> FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New task") }
+                    // A project's Files tab has its own (new notebook, upload, folder).
+                    else -> if ((screen as? Screen.Project)?.let { ProjectTab.files[it.id] } != true) FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New task") }
                 }
             },
             snackbarHost = { SnackbarHost(snackbar) },
@@ -248,14 +249,19 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     if (creating) CreateTaskSheet((screen as? Screen.Project)?.id) { creating = false }
 }
 
+/** Which projects' pages show their Files tab. */
+private object ProjectTab {
+    val files = androidx.compose.runtime.mutableStateMapOf<UUID, Boolean>()
+}
+
 /** A project's page: its tasks, or its files (the project's own storage). */
 @Composable
 private fun ProjectTabs(id: UUID, name: String, tasks: @Composable () -> Unit) {
-    var files by remember(id) { mutableStateOf(false) }
+    val files = ProjectTab.files[id] == true
     Column(Modifier.fillMaxSize()) {
         androidx.compose.material3.SecondaryTabRow(if (files) 1 else 0) {
-            androidx.compose.material3.Tab(!files, { files = false }, text = { Text("Tasks") })
-            androidx.compose.material3.Tab(files, { files = true }, text = { Text("Files") })
+            androidx.compose.material3.Tab(!files, { ProjectTab.files[id] = false }, text = { Text("Tasks") })
+            androidx.compose.material3.Tab(files, { ProjectTab.files[id] = true }, text = { Text("Files") })
         }
         Box(Modifier.weight(1f)) { if (files) ProjectFiles(id, name) else tasks() }
     }

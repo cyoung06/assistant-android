@@ -136,6 +136,12 @@ class Api(endpoint: Endpoint) {
         }
     }
 
+    /** A preview of a drive PDF's first page (JPEG); null if there's none. */
+    suspend fun driveThumb(path: String, version: String?, width: Int): ByteArray? =
+        http.prepareGet("$base/api/v1/drive/thumb?path=${drivePath(path)}&version=${drivePath(version ?: "")}&width=$width").execute { r ->
+            if (r.status.isSuccess()) r.bodyAsChannel().toInputStream().use { it.readBytes() } else null
+        }
+
     /** Writes [from] to a drive file (its folder is made if needed). */
     suspend fun driveUpload(path: String, from: java.io.File, type: String?) = send {
         http.put("$base/api/v1/drive/file?path=${drivePath(path)}") {

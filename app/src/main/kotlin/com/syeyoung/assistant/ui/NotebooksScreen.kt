@@ -85,18 +85,7 @@ fun NotebooksScreen() {
                         runCatching {
                             val folder = project?.let { id -> repo.api().drive.projectFolder(id, "").let { r -> if (r.success) r.body().path else error("HTTP ${r.status}") } }
                                 ?: "Projects/${com.syeyoung.assistant.drive.DriveProvider.NO_PROJECT}/"
-                            val existing = repo.api().driveFolder(folder).propertyEntries.map { it.name }.toSet()
-                            var file = "$title.pdf"
-                            var n = 2
-                            while (file in existing) file = "$title ($n).pdf".also { n++ }
-                            val tmp = java.io.File.createTempFile("notebook", ".pdf", context.cacheDir)
-                            try {
-                                tmp.writeBytes(com.syeyoung.assistant.notebook.BlankPdf.notebook(20, style))
-                                repo.api().driveUpload(folder + file, tmp, "application/pdf")
-                            } finally {
-                                tmp.delete()
-                            }
-                            folder + file
+                            createNotebook(context, repo, folder, title, style)
                         }.onSuccess { path -> name = ""; Notebooks.open(context, com.syeyoung.assistant.drive.DriveProvider.uri(context, path)) }
                             .onFailure { android.widget.Toast.makeText(context, "Couldn't make the notebook: ${it.message}", android.widget.Toast.LENGTH_LONG).show() }
                     }
@@ -129,4 +118,20 @@ fun NotebooksScreen() {
             )
         }
     }
+}
+
+/** Makes a blank notebook called [title] (numbered if that's taken) in the drive folder [folder]; its path. */
+suspend fun createNotebook(context: android.content.Context, repo: com.syeyoung.assistant.data.Repo, folder: String, title: String, style: PageStyle): String {
+    val existing = repo.api().driveFolder(folder).propertyEntries.map { it.name }.toSet()
+    var file = "$title.pdf"
+    var n = 2
+    while (file in existing) file = "$title ($n).pdf".also { n++ }
+    val tmp = java.io.File.createTempFile("notebook", ".pdf", context.cacheDir)
+    try {
+        tmp.writeBytes(com.syeyoung.assistant.notebook.BlankPdf.notebook(20, style))
+        repo.api().driveUpload(folder + file, tmp, "application/pdf")
+    } finally {
+        tmp.delete()
+    }
+    return folder + file
 }

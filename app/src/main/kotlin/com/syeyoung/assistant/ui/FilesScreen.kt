@@ -42,6 +42,10 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -180,6 +184,9 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?) {
         }
     }
 
+    var creating by remember { mutableStateOf(false) }
+    var notebook by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             // Where we are, from the project's top.
@@ -192,8 +199,6 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?) {
                 }
             }
             busy?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline) }
-            IconButton({ upload.launch(arrayOf("*/*")) }) { Icon(Icons.Filled.Upload, "Upload") }
-            IconButton({ naming = true }) { Icon(Icons.Filled.CreateNewFolder, "New folder") }
             IconButton({ icons = !icons; prefs.edit().putString("files.view", if (icons) "icons" else "list").apply() }) {
                 Icon(if (icons) Icons.AutoMirrored.Filled.List else Icons.Filled.GridView, if (icons) "Show as list" else "Show as icons")
             }
@@ -204,13 +209,14 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?) {
         if (entries != null && list.isEmpty()) Text("Nothing here yet. Upload files, or save notebooks here.", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         val open = { e: DriveEntry -> if (e.folder) path = e.path else openFile(context, e) }
         if (icons) {
-            LazyVerticalGrid(GridCells.Adaptive(116.dp), Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyVerticalGrid(GridCells.Adaptive(116.dp), Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 88.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(list, key = { it.path }) { e ->
                     Column(
                         Modifier.androidLongClick({ open(e) }, { menuFor = e }).padding(8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Icon(iconOf(e), null, Modifier.size(56.dp), tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (e.name.lowercase().endsWith(".pdf")) PdfThumb(e) { Icon(iconOf(e), null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        else Icon(iconOf(e), null, Modifier.size(56.dp), tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(6.dp))
                         Text(e.name, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, fontSize = 13.sp)
                     }
@@ -230,6 +236,28 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?) {
         }
     }
 
+    // New things here: a notebook (opened to write in), uploaded files, or a folder.
+    Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+        androidx.compose.material3.FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New") }
+        androidx.compose.material3.DropdownMenu(creating, { creating = false }) {
+            androidx.compose.material3.DropdownMenuItem({ Text("New notebook") }, { creating = false; notebook = true }, leadingIcon = { Icon(Icons.Filled.EditNote, null) })
+            androidx.compose.material3.DropdownMenuItem({ Text("Upload files") }, { creating = false; upload.launch(arrayOf("*/*")) }, leadingIcon = { Icon(Icons.Filled.Upload, null) })
+            androidx.compose.material3.DropdownMenuItem({ Text("New folder") }, { creating = false; naming = true }, leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
+        }
+    }
+    }
+
+    if (notebook) NewNotebookDialog { title, style ->
+        notebook = false
+        if (title != null) scope.launch {
+            busy = "Making the notebook…"
+            runCatching { createNotebook(context, repo, path, title, style) }
+                .onSuccess { Notebooks.open(context, DriveProvider.uri(context, it)) }
+                .onFailure { Toast.makeText(context, "Couldn't make the notebook: ${it.message}", Toast.LENGTH_LONG).show() }
+            busy = null
+            reload++
+        }
+    }
     if (naming) NameDialog("New folder", "") { name ->
         naming = false
         if (name != null) scope.launch { runCatching { repo.api().driveMakeFolder(path + name + "/") }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }; reload++ }
@@ -255,6 +283,50 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?) {
             },
         )
     }
+}
+
+/** A notebook's name and page style. */
+@Composable
+private fun NewNotebookDialog(onDone: (String?, com.syeyoung.assistant.notebook.PageStyle) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var style by remember { mutableStateOf(com.syeyoung.assistant.notebook.PageStyle.DOTS) }
+    AlertDialog(
+        onDismissRequest = { onDone(null, style) },
+        title = { Text("New notebook") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, placeholder = { Text("Notebook") })
+                com.syeyoung.assistant.notebook.StylePicker(style) { style = it }
+            }
+        },
+        confirmButton = { TextButton({ onDone(name.trim().replace('/', ' ').ifBlank { "Notebook" }, style) }) { Text("Create") } },
+        dismissButton = { TextButton({ onDone(null, style) }) { Text("Cancel") } },
+    )
+}
+
+/** Previews already fetched, by path and version. */
+private val thumbs = android.util.LruCache<String, android.graphics.Bitmap>(120)
+
+/** A PDF's first page (from the server); [fallback] until it's loaded, or if there's none. */
+@Composable
+private fun PdfThumb(e: DriveEntry, fallback: @Composable () -> Unit) {
+    val context = LocalContext.current
+    val key = "${e.path}|${e.modified}"
+    var bitmap by remember(key) { mutableStateOf(thumbs.get(key)) }
+    LaunchedEffect(key) {
+        if (bitmap != null) return@LaunchedEffect
+        bitmap = withContext(Dispatchers.IO) {
+            runCatching { Repo.get(context).api().driveThumb(e.path, e.modified, 240) }.getOrNull()
+                ?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) }
+        }?.also { thumbs.put(key, it) }
+    }
+    val b = bitmap
+    if (b == null) fallback()
+    else androidx.compose.foundation.Image(
+        b.asImageBitmap(), null,
+        Modifier.height(84.dp).clip(RoundedCornerShape(3.dp)).border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(3.dp)),
+        contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+    )
 }
 
 @Composable
