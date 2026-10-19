@@ -224,7 +224,46 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private class Sharp(val page: Int, val bitmap: Bitmap, val zoom: Float, val left: Float, val top: Float, val scrollX: Float, val scrollY: Float)
     private val sharp = HashMap<Int, Sharp>()
 
+    // A page turn in progress: the screen as it was slides out while the new page slides in.
+    private var turnShot: Bitmap? = null
+    private var turnDir = 1
+    private var turnVertical = false
+    private var turnT = 1f
+    private var turnAnim: ValueAnimator? = null
+
     override fun onDraw(canvas: Canvas) {
+        val shot = turnShot
+        if (shot == null) { drawPages(canvas); return }
+        val size = if (turnVertical) height.toFloat() else width.toFloat()
+        val off = (1 - turnT) * size * turnDir
+        canvas.save()
+        if (turnVertical) canvas.translate(0f, off) else canvas.translate(off, 0f)
+        drawPages(canvas)
+        canvas.restore()
+        if (turnVertical) canvas.drawBitmap(shot, 0f, off - size * turnDir, null) else canvas.drawBitmap(shot, off - size * turnDir, 0f, null)
+    }
+
+    /** Turns the page with a slide: [change] moves to the new page; [dir] 1 = forward. */
+    private fun animateTurn(dir: Int, vertical: Boolean, change: () -> Unit) {
+        turnAnim?.end()
+        if (width <= 0 || height <= 0) { change(); afterMove(); return }
+        val shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        drawPages(Canvas(shot))
+        change()
+        turnShot = shot; turnDir = dir; turnVertical = vertical; turnT = 0f
+        afterMove()
+        turnAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 260
+            interpolator = DecelerateInterpolator(1.6f)
+            addUpdateListener { turnT = it.animatedValue as Float; invalidate() }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) { turnShot?.recycle(); turnShot = null; turnT = 1f; invalidate() }
+            })
+            start()
+        }
+    }
+
+    private fun drawPages(canvas: Canvas) {
         canvas.drawColor(0xFFE8E8EC.toInt())
         if (rects.isEmpty()) return
         val visible = rects.indices.filter { RectF.intersects(screenRect(it), RectF(0f, 0f, width.toFloat(), height.toFloat())) }
@@ -446,7 +485,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                     else -> nearestPage()
                 }
                 flingHandled = true
-                turnTo(target)
+                val to = target.coerceIn(0, max(0, pageCount - 1))
+                if (vertical && to != currentPage) {
+                    val dir = if (to > currentPage) 1 else -1
+                    animateTurn(dir, vertical = true) { scrollXf = to * width.toFloat() }
+                } else turnTo(target)
                 return true
             }
             val (minX, maxX, minY, maxY) = scrollBounds()
@@ -484,13 +527,14 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         pushX = 0f; pushY = 0f
         val target = currentPage + dir
         if (target !in rects.indices) return
-        // The same spot in the next page's slot, then to its near edge.
-        scrollXf += dir * width * zoom
-        currentPage = target
-        val r = scrollRange()
-        if (vertical) scrollYf = if (dir > 0) r.top else r.bottom else scrollXf = if (dir > 0) r.left else r.right
-        clampScroll()
-        onPageChanged(currentPage, pageCount)
+        animateTurn(dir, vertical) {
+            // The same spot in the next page's slot, then to its near edge.
+            scrollXf += dir * width * zoom
+            currentPage = target
+            val r = scrollRange()
+            if (vertical) scrollYf = if (dir > 0) r.top else r.bottom else scrollXf = if (dir > 0) r.left else r.right
+            clampScroll()
+        }
     }
 
     private fun currentPageFrom(x: Float) = ((x + width / 2f) / width).toInt().coerceIn(0, max(0, pageCount - 1))
