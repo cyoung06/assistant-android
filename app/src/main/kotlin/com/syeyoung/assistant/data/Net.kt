@@ -99,8 +99,8 @@ class Api(endpoint: Endpoint) {
     suspend fun download(id: UUID): ByteArray = send { http.get("$base/api/v1/attachments/$id") }.body()
 
     suspend fun createTask(req: CreateTaskRequest) = tasks.create(req).value()
-    suspend fun createEvent(req: CreateEventRequest) = calendar.create1(req).value()
-    suspend fun analyze(req: AnalyzeRequest) = capture.analyze(req).value()
+    suspend fun createEvent(req: CreateEventRequest) = calendar.createEvent(req).value()
+    suspend fun analyze(req: AnalyzeRequest) = capture.analyzeCapture(req).value()
 
     private suspend fun send(block: suspend () -> io.ktor.client.statement.HttpResponse): io.ktor.client.statement.HttpResponse {
         val r = block()

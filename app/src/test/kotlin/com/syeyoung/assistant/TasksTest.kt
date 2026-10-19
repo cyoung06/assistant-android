@@ -2,7 +2,11 @@ package com.syeyoung.assistant
 
 import com.syeyoung.assistant.api.models.DueDto
 import com.syeyoung.assistant.api.models.TaskResponse
+import com.syeyoung.assistant.api.models.InitiativeResponse
+import com.syeyoung.assistant.api.models.ProjectResponse
 import com.syeyoung.assistant.data.Bucket
+import com.syeyoung.assistant.data.Snapshot
+import com.syeyoung.assistant.data.drawerProjects
 import com.syeyoung.assistant.data.bucket
 import com.syeyoung.assistant.data.dueChoices
 import com.syeyoung.assistant.data.dueText
@@ -63,5 +67,22 @@ class TasksTest {
         val dateOnly = Reminders.moments("2026-10-20", null)
         assertEquals(listOf("2026-10-19T09:00+09:00[Asia/Seoul]", "2026-10-20T09:00+09:00[Asia/Seoul]"), dateOnly.map { it.first.toString() })
         assertEquals("Due today", dateOnly[1].second)
+    }
+
+    @Test fun drawerShowsProjectsOfActiveInitiativesOrNone() {
+        val fall = UUID.randomUUID()
+        val spring = UUID.randomUUID()
+        fun project(name: String, initiatives: List<UUID>, state: ProjectResponse.State = ProjectResponse.State.in_progress) =
+            ProjectResponse(color = "#000000", description = "", doneCount = 0, id = UUID.randomUUID(), initiativeIds = initiatives, name = name, state = state, taskCount = 0)
+        fun initiative(id: UUID, status: InitiativeResponse.Status) =
+            InitiativeResponse(description = "", doneCount = 0, id = id, name = "", projectIds = emptyList(), status = status, taskCount = 0)
+        val data = Snapshot(
+            projects = listOf(
+                project("now", listOf(fall)), project("old", listOf(spring)), project("loose", emptyList()), project("both", listOf(spring, fall)),
+                project("done", listOf(fall), ProjectResponse.State.completed),
+            ),
+            initiatives = listOf(initiative(fall, InitiativeResponse.Status.active), initiative(spring, InitiativeResponse.Status.completed)),
+        )
+        assertEquals(listOf("now", "loose", "both"), drawerProjects(data).map { it.name })
     }
 }

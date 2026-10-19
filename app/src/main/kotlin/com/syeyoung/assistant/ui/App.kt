@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.syeyoung.assistant.api.models.TaskResponse
+import com.syeyoung.assistant.data.drawerProjects
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.data.TaskChange
 import com.syeyoung.assistant.data.closed
@@ -108,7 +109,7 @@ fun AssistantApp(openTask: UUID? = null) {
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             Text("Projects", Modifier.padding(horizontal = 28.dp, vertical = 4.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            state.data.projects.filter { it.state.value != "completed" && it.state.value != "canceled" }.forEach { p ->
+            drawerProjects(state.data).forEach { p ->
                 val open = state.data.tasks.count { it.projectId == p.id && !it.closed }
                 NavigationDrawerItem(
                     label = { Text(p.name) }, icon = { Dot(p.color) }, badge = { if (open > 0) Text("$open") },

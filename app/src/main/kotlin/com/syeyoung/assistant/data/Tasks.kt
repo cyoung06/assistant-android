@@ -1,6 +1,7 @@
 package com.syeyoung.assistant.data
 
 import com.syeyoung.assistant.api.models.DueDto
+import com.syeyoung.assistant.api.models.InitiativeResponse
 import com.syeyoung.assistant.api.models.LabelResponse
 import com.syeyoung.assistant.api.models.ProjectResponse
 import com.syeyoung.assistant.api.models.TaskResponse
@@ -119,3 +120,11 @@ fun refParts(markdown: String): List<Part> {
 }
 
 fun refMarkdown(title: String, url: String) = "[" + title.replace(Regex("""([\[\]])"""), """\\$1""") + "](" + url.replace(")", "%29").replace(" ", "%20") + ")"
+
+/** Open projects for the drawer: those in an active initiative, or in none (a finished semester's courses drop out). */
+fun drawerProjects(data: Snapshot): List<ProjectResponse> {
+    val active = data.initiatives.filter { it.status == InitiativeResponse.Status.active }.map { it.id }.toSet()
+    return data.projects.filter { p ->
+        p.state.value != "completed" && p.state.value != "canceled" && (p.initiativeIds.isEmpty() || p.initiativeIds.any { it in active })
+    }
+}

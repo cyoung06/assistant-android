@@ -4,6 +4,7 @@ import android.content.Context
 import com.syeyoung.assistant.api.models.CreateTaskRequest
 import com.syeyoung.assistant.api.models.DueDto
 import com.syeyoung.assistant.api.models.EventOccurrence
+import com.syeyoung.assistant.api.models.InitiativeResponse
 import com.syeyoung.assistant.api.models.LabelResponse
 import com.syeyoung.assistant.api.models.ProjectResponse
 import com.syeyoung.assistant.api.models.TaskResponse
@@ -30,6 +31,7 @@ data class Snapshot(
     val tasks: List<TaskResponse> = emptyList(),
     val projects: List<ProjectResponse> = emptyList(),
     val labels: List<LabelResponse> = emptyList(),
+    val initiatives: List<InitiativeResponse> = emptyList(),
     /** When it was fetched (epoch ms); 0 = never. */
     val fetchedAt: Long = 0,
 )
@@ -78,7 +80,8 @@ class Repo private constructor(private val context: Context) {
                 val tasks = async { api.tasks.tasks().value() }
                 val projects = async { api.tasks.projects().value() }
                 val labels = async { api.tasks.labels().value() }
-                Snapshot(tasks.await(), projects.await(), labels.await(), System.currentTimeMillis())
+                val initiatives = async { api.tasks.initiatives().value() }
+                Snapshot(tasks.await(), projects.await(), labels.await(), initiatives.await(), System.currentTimeMillis())
             }
             _state.value = State(data)
             runCatching { cacheFile.writeText(AppJson.encodeToString(Snapshot.serializer(), data)) }
