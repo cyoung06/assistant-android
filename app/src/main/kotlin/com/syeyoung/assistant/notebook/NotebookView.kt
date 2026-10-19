@@ -414,24 +414,35 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
             scroller.forceFinished(true); settle?.cancel()
+            pushX = 0f; pushY = 0f
             dragStartX = scrollXf
             scaled = false
             return true
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
-            scrollXf += dx
-            if (!(mode == ScrollMode.PAGED && zoom <= 1.01f)) scrollYf += dy
-            if (mode == ScrollMode.PAGED && zoom <= 1.01f) scrollXf = scrollXf.coerceIn(0f, max(0f, contentW - width)) else clampScroll()
+            if (mode == ScrollMode.PAGED && zoom <= 1.01f) {
+                scrollXf = (scrollXf + dx).coerceIn(0f, max(0f, contentW - width))
+                afterMove()
+                return true
+            }
+            val wantX = scrollXf + dx
+            val wantY = scrollYf + dy
+            scrollXf = wantX; scrollYf = wantY
+            clampScroll()
+            if (mode == ScrollMode.PAGED) pushPastEdge(wantX - scrollXf, wantY - scrollYf)
             afterMove()
             return true
         }
 
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
             if (mode == ScrollMode.PAGED && zoom <= 1.01f) {
+                // Left/right, or up/down (the page doesn't move vertically, but a flick turns it).
+                val vertical = abs(vy) > abs(vx)
+                val v = if (vertical) vy else vx
                 val target = when {
-                    vx < -800 -> currentPageFrom(dragStartX) + 1
-                    vx > 800 -> currentPageFrom(dragStartX) - 1
+                    v < -800 -> currentPageFrom(dragStartX) + 1
+                    v > 800 -> currentPageFrom(dragStartX) - 1
                     else -> nearestPage()
                 }
                 flingHandled = true
@@ -452,6 +463,34 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         if (!scale.isInProgress) gestures.onTouchEvent(e)
         if (e.actionMasked == MotionEvent.ACTION_UP && mode == ScrollMode.PAGED && zoom <= 1.01f && !flingHandled) turnTo(nearestPage())
         if (e.actionMasked == MotionEvent.ACTION_UP && mode == ScrollMode.PAGED && zoom < 1.01f && scaled) turnTo(currentPage)
+    }
+
+    /**
+     * Zoomed in, page by page: pushing on past the page's edge (what scrolling couldn't take) goes
+     * on to the next page (or back to the previous one) at the same zoom, from its near edge.
+     */
+    private var pushX = 0f
+    private var pushY = 0f
+    private fun pushPastEdge(leftX: Float, leftY: Float) {
+        pushX = if (leftX != 0f && pushX * leftX >= 0) pushX + leftX else 0f
+        pushY = if (leftY != 0f && pushY * leftY >= 0) pushY + leftY else 0f
+        val needed = 90f * resources.displayMetrics.density
+        val dir = when {
+            abs(pushY) > needed -> if (pushY > 0) 1 else -1
+            abs(pushX) > needed -> if (pushX > 0) 1 else -1
+            else -> return
+        }
+        val vertical = abs(pushY) > needed
+        pushX = 0f; pushY = 0f
+        val target = currentPage + dir
+        if (target !in rects.indices) return
+        // The same spot in the next page's slot, then to its near edge.
+        scrollXf += dir * width * zoom
+        currentPage = target
+        val r = scrollRange()
+        if (vertical) scrollYf = if (dir > 0) r.top else r.bottom else scrollXf = if (dir > 0) r.left else r.right
+        clampScroll()
+        onPageChanged(currentPage, pageCount)
     }
 
     private fun currentPageFrom(x: Float) = ((x + width / 2f) / width).toInt().coerceIn(0, max(0, pageCount - 1))
