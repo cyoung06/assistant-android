@@ -41,6 +41,8 @@ import com.syeyoung.assistant.data.refParts
 import com.syeyoung.assistant.data.value
 import kotlinx.coroutines.delay
 
+private val GITHUB = Regex("""^https://github\.com/[\w.-]+/[\w.-]+(?:/(issues|pull)/\d+)?""")
+
 /** What a reference link points to, as a small marker before its title. */
 fun refMarker(url: String): String = when {
     url.startsWith("mid:") || "#mail/" in url -> "✉"
@@ -48,6 +50,7 @@ fun refMarker(url: String): String = when {
     "/tasks/project/" in url || "#tasks/project/" in url -> "▤"
     "/task/" in url || "#task/" in url -> "◯"
     "/event/" in url || "#event/" in url -> "▦"
+    GITHUB.find(url) != null -> when (GITHUB.find(url)!!.groupValues[1]) { "pull" -> "⇄"; "issues" -> "◉"; else -> "⌂" }
     else -> "↗"
 }
 
