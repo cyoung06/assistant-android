@@ -26,8 +26,32 @@ android {
         applicationId = "com.syeyoung.assistant"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // Releases pass the commit count (release.sh), so each one is newer than the last.
+        val build = (findProperty("versionCode") as String?)?.toInt() ?: 1
+        versionCode = build
+        versionName = "0.2.$build"
+    }
+
+    // The release key lives only on the Mac that publishes releases (assistant/secrets), never in
+    // CI: an update has to be signed by it, so control of GitHub alone can't ship one to the devices.
+    val keystore = rootProject.file("../secrets/android-release.jks")
+    signingConfigs {
+        if (keystore.exists()) create("release") {
+            val password = rootProject.file("../secrets/android-release.password").readText().trim()
+            storeFile = keystore
+            storePassword = password
+            keyAlias = "assistant"
+            keyPassword = password
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.findByName("release")
+            // The phone, the tablet and the Quest are all arm64; leaving out the other ABIs of the
+            // embedded Tailscale keeps updates small.
+            ndk { abiFilters += "arm64-v8a" }
+        }
     }
 
     buildFeatures {
