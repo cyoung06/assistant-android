@@ -170,9 +170,9 @@ private fun Tools(ui: ToolbarState, onChange: () -> Unit) {
             Box(
                 Modifier.size(ITEM).clip(CircleShape)
                     .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-                    .clickable { if (selected) sizing = true else { ui.tool = t; onChange() } },
+                    .clickable { if (selected) sizing = t != Tool.SELECT else { ui.tool = t; onChange() } },
                 contentAlignment = Alignment.Center,
-            ) { ToolGlyph(t, if (t == Tool.ERASER) MaterialTheme.colorScheme.onSurface else colorFor(ui, t)) }
+            ) { ToolGlyph(t, if (t == Tool.ERASER || t == Tool.SELECT) MaterialTheme.colorScheme.onSurface else colorFor(ui, t)) }
             DropdownMenu(sizing, { sizing = false }) { SizePanel(ui, t, onChange) }
         }
     }
@@ -184,12 +184,12 @@ private fun colorFor(ui: ToolbarState, t: Tool) = Color(if (t == Tool.HIGHLIGHTE
 @Composable
 private fun SizePanel(ui: ToolbarState, t: Tool, onChange: () -> Unit) {
     val range = SIZE_RANGES.getValue(t)
-    val value = when (t) { Tool.PEN -> ui.penWidth; Tool.HIGHLIGHTER -> ui.highlighterWidth; Tool.ERASER -> ui.eraserRadius }
+    val value = when (t) { Tool.PEN -> ui.penWidth; Tool.HIGHLIGHTER -> ui.highlighterWidth; Tool.ERASER, Tool.SELECT -> ui.eraserRadius }
     fun toSlider(v: Float) = (ln(v / range.start) / ln(range.endInclusive / range.start)).coerceIn(0f, 1f)
     fun fromSlider(s: Float) = range.start * (range.endInclusive / range.start).pow(s)
     Column(Modifier.width(260.dp).padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(when (t) { Tool.PEN -> "Pen"; Tool.HIGHLIGHTER -> "Highlighter"; Tool.ERASER -> "Eraser" }, Modifier.weight(1f), fontSize = 14.sp)
+            Text(when (t) { Tool.PEN -> "Pen"; Tool.HIGHLIGHTER -> "Highlighter"; Tool.ERASER, Tool.SELECT -> "Eraser" }, Modifier.weight(1f), fontSize = 14.sp)
             Text(if (t == Tool.ERASER) "${value.roundToInt()} dp" else String.format(Locale.US, "%.2f pt", value), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         // Roughly how it looks on the page at normal zoom, on white like the page.
@@ -204,7 +204,7 @@ private fun SizePanel(ui: ToolbarState, t: Tool, onChange: () -> Unit) {
         }
         Slider(toSlider(value), { s ->
             val v = fromSlider(s)
-            when (t) { Tool.PEN -> ui.penWidth = v; Tool.HIGHLIGHTER -> ui.highlighterWidth = v; Tool.ERASER -> ui.eraserRadius = v }
+            when (t) { Tool.PEN -> ui.penWidth = v; Tool.HIGHLIGHTER -> ui.highlighterWidth = v; Tool.ERASER, Tool.SELECT -> ui.eraserRadius = v }
             onChange()
         })
     }
@@ -222,6 +222,14 @@ private fun ToolGlyph(t: Tool, color: Color) {
                 drawCircle(color, w * 0.12f, Offset(w * 0.2f, w * 0.8f))
             }
             Tool.HIGHLIGHTER -> drawLine(color, Offset(w * 0.2f, w * 0.8f), Offset(w * 0.8f, w * 0.2f), strokeWidth = w * 0.32f, cap = StrokeCap.Square)
+            Tool.SELECT -> {
+                // An arrow pointer.
+                val p = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(w * 0.25f, w * 0.15f); lineTo(w * 0.25f, w * 0.8f); lineTo(w * 0.42f, w * 0.63f)
+                    lineTo(w * 0.55f, w * 0.88f); lineTo(w * 0.65f, w * 0.83f); lineTo(w * 0.52f, w * 0.58f); lineTo(w * 0.75f, w * 0.58f); close()
+                }
+                drawPath(p, outline, style = Stroke(w * 0.07f))
+            }
             Tool.ERASER -> {
                 drawRoundRect(outline, topLeft = Offset(w * 0.15f, w * 0.35f), size = Size(w * 0.7f, w * 0.34f), cornerRadius = CornerRadius(w * 0.08f), style = Stroke(w * 0.1f))
                 drawLine(outline, Offset(w * 0.45f, w * 0.35f), Offset(w * 0.45f, w * 0.69f), strokeWidth = w * 0.1f)
@@ -232,7 +240,7 @@ private fun ToolGlyph(t: Tool, color: Color) {
 
 @Composable
 private fun Swatches(ui: ToolbarState, onChange: () -> Unit) {
-    if (ui.tool == Tool.ERASER) return
+    if (ui.tool == Tool.ERASER || ui.tool == Tool.SELECT) return
     val hl = ui.tool == Tool.HIGHLIGHTER
     val colors = if (hl) HIGHLIGHTER_COLORS else PEN_COLORS
     colors.forEachIndexed { i, c ->

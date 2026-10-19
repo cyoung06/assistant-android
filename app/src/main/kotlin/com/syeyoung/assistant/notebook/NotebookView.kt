@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.PointF
 import android.graphics.RectF
 import android.util.SizeF
 import android.view.GestureDetector
@@ -62,9 +63,15 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     val pageCount get() = sizes.size
     fun pageSize(i: Int): SizeF? = sizes.getOrNull(i)
     private val strokes = mutableListOf<InkStroke>()
+    private val images = mutableListOf<NoteImage>()
+    /** The image picked with the select tool (moved, resized, copied or deleted). */
+    var selectedImage: NoteImage? = null
+        private set(value) { field = value; onSelectionChanged(value); invalidate() }
+    var onSelectionChanged: (NoteImage?) -> Unit = {}
     private val undo = ArrayDeque<InkChange>()
     private val redo = ArrayDeque<InkChange>()
     fun strokesSnapshot(): List<InkStroke> = strokes.toList()
+    fun imagesSnapshot(): List<NoteImage> = images.toList()
 
     // ---- layout: each page's rect at zoom 1 in "content" coordinates; screen = content × zoom − scroll ----
     private var rects: List<RectF> = emptyList()
@@ -79,9 +86,12 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     private val gap get() = 12f * resources.displayMetrics.density
 
-    fun setDocument(pageSizes: List<SizeF>, inkStrokes: List<InkStroke>) {
+    fun setDocument(pageSizes: List<SizeF>, inkStrokes: List<InkStroke>, pageImages: List<NoteImage>) {
         sizes = pageSizes
         strokes.clear(); strokes += inkStrokes
+        images.clear(); images += pageImages
+        selectedImage = null
+        group = null
         undo.clear(); redo.clear(); notifyUndo()
         dropBitmaps()
         layoutPages()
@@ -94,6 +104,10 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         sizes = pageSizes
         val kept = strokes.mapNotNull { s -> moved(s.page)?.let { s.onPage(it) } }
         strokes.clear(); strokes += kept
+        val keptImages = images.mapNotNull { img -> moved(img.page)?.let { img.with(page = it) } }
+        images.clear(); images += keptImages
+        selectedImage = null
+        group = null
         // Undo history refers to old page numbers: start it over.
         undo.clear(); redo.clear(); notifyUndo()
         dropBitmaps()
@@ -331,8 +345,24 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             // The renderer doesn't place strokes itself: the canvas maps page points to the screen,
             // and the same matrix is passed so it draws at the right resolution.
             canvas.concat(drawMatrix)
-            for (s in strokes) if (s.page == i) strokeRenderer.draw(canvas, s.stroke, drawMatrix)
+            val g = group?.takeIf { it.page == i }
+            val gm = groupMatrix
+            for (img in images) if (img.page == i) {
+                val moving = gm != null && g != null && img.id in g.imageIds
+                if (moving) { canvas.save(); canvas.concat(gm) }
+                if (cropping && img.id == selectedImage?.id) canvas.drawBitmap(img.bitmap, null, img.fullRect(), dimPaint)
+                canvas.drawBitmap(img.bitmap, img.source(), img.rect, bitmapPaint)
+                if (moving) canvas.restore()
+            }
+            for (s in strokes) if (s.page == i) {
+                val moving = gm != null && g != null && s.id in g.strokeIds
+                if (moving) { canvas.save(); canvas.concat(gm) }
+                strokeRenderer.draw(canvas, s.stroke, drawMatrix)
+                if (moving) canvas.restore()
+            }
             canvas.restore()
+            g?.let { grp -> groupOnScreen(grp)?.let { r -> canvas.drawRect(r, lassoPaint); for (h in handles(r).take(4)) { canvas.drawCircle(h.x, h.y, handleR, handlePaint); canvas.drawCircle(h.x, h.y, handleR, handleRing) } } }
+            selectedImage?.takeIf { it.page == i }?.let { drawSelection(canvas, it) }
         }
         // Keep the neighbours' 1× tiles ready for a page turn.
         for (i in (visible.flatMap { listOf(it - 1, it + 1) } - visible.toSet()).filter { it in rects.indices }) {
@@ -340,6 +370,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             drawTiles(null, i, 0, r, r, request = true, want, center, priority = 1e7f)
         }
         wanted = want
+        lasso?.let { canvas.drawPath(it, lassoPaint) }
+        onSelectionFrame(selectedImage?.let { selectionOnScreen(it) } ?: group?.let { groupOnScreen(it) })
     }
 
     /**
@@ -385,6 +417,90 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         }
     }
 
+    private val selectPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f * resources.displayMetrics.density; color = 0xFF1E5BD8.toInt() }
+    private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF1E5BD8.toInt() }
+    private val handleR get() = 9f * resources.displayMetrics.density
+
+    private val dimPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 80 }
+    private val handleRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f * resources.displayMetrics.density; color = Color.WHITE }
+
+    /** While true, the selected image's handles crop it instead of resizing it. */
+    var cropping = false
+        set(value) { field = value; invalidate() }
+
+    /** Where the selection is on screen, after each frame (for the bar that floats above it). */
+    var onSelectionFrame: (RectF?) -> Unit = {}
+
+    /** The selected image's frame on screen. */
+    private fun selectionOnScreen(img: NoteImage) = RectF(img.rect).also { pageMatrix(img.page).mapRect(it) }
+
+    /** The handles, on screen: corners (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left), then, when cropping, edges (4 top, 5 right, 6 bottom, 7 left). */
+    private fun handles(r: RectF): List<PointF> {
+        val corners = listOf(PointF(r.left, r.top), PointF(r.right, r.top), PointF(r.right, r.bottom), PointF(r.left, r.bottom))
+        return if (!cropping) corners else corners + listOf(PointF(r.centerX(), r.top), PointF(r.right, r.centerY()), PointF(r.centerX(), r.bottom), PointF(r.left, r.centerY()))
+    }
+
+    private fun drawSelection(canvas: Canvas, img: NoteImage) {
+        val r = selectionOnScreen(img)
+        canvas.drawRect(r, selectPaint)
+        for (h in handles(r)) { canvas.drawCircle(h.x, h.y, handleR, handlePaint); canvas.drawCircle(h.x, h.y, handleR, handleRing) }
+    }
+
+    /**
+     * Places an image (as imported: PNG or JPEG bytes) on the page in view, centred on the screen
+     * point ([x], [y]) or the middle of the screen, at its natural size (capped to most of the page).
+     */
+    fun addImage(bytes: ByteArray, mime: String, x: Float = width / 2f, y: Float = height / 2f): Boolean {
+        if (rects.isEmpty()) return false
+        val bitmap = NoteImage.decode(bytes) ?: return false
+        val page = pageAt(x, y) ?: return false
+        val pt = floatArrayOf(x, y).also { Matrix().apply { pageMatrix(page).invert(this) }.mapPoints(it) }
+        val size = sizes[page]
+        // 96 dpi pixels to points, then no more than 70% of the page either way.
+        var w = bitmap.width * 0.75f
+        var h = bitmap.height * 0.75f
+        val fit = minOf(1f, size.width * 0.7f / w, size.height * 0.7f / h)
+        w *= fit; h *= fit
+        val left = (pt[0] - w / 2).coerceIn(0f, (size.width - w).coerceAtLeast(0f))
+        val top = (pt[1] - h / 2).coerceIn(0f, (size.height - h).coerceAtLeast(0f))
+        val img = NoteImage(InkIds.next(), page, RectF(left, top, left + w, top + h), bytes, mime, bitmap)
+        images += img
+        record(InkChange.ImageAdded(img))
+        group = null
+        selectedImage = img
+        return true
+    }
+
+    fun deleteSelected() {
+        val img = selectedImage ?: return
+        images.removeAll { it.id == img.id }
+        selectedImage = null
+        record(InkChange.ImageRemoved(img))
+    }
+
+    fun clearSelection() { cropping = false; selectedImage = null; group = null }
+
+    /** A copy of the selected image, a little below and to the right; the copy is selected. */
+    fun duplicateSelected() {
+        val img = selectedImage ?: return
+        val copy = img.with(id = InkIds.next(), rect = RectF(img.rect).apply { offset(12f, 12f) })
+        images += copy
+        record(InkChange.ImageAdded(copy))
+        selectedImage = copy
+    }
+
+    /** Shows the whole picture again. */
+    fun resetCrop() {
+        val img = selectedImage ?: return
+        val full = img.with(rect = img.fullRect(), crop = RectF(0f, 0f, 1f, 1f))
+        images.replaceAll { if (it.id == full.id) full else it }
+        record(InkChange.ImageChanged(img, full))
+        selectedImage = full
+    }
+
+    /** Places an image (bytes as imported) with its top-left at the screen point. */
+    fun pasteImageAt(bytes: ByteArray, mime: String, x: Float, y: Float) = addImage(bytes, mime, x, y)
+
     fun dropBitmaps() {
         tiles.values.forEach { it.recycle() }
         tiles.clear()
@@ -394,7 +510,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     // ---- touch ----
 
-    private enum class Gesture { NONE, PEN, ERASE, FINGERS }
+    private enum class Gesture { NONE, PEN, ERASE, FINGERS, SELECT }
     private var gesture = Gesture.NONE
     private var lastPenTime = 0L
     private var penPointer = -1
@@ -427,12 +543,23 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+            onTouchStart()
             gesture = when {
+                // What's selected can be moved or resized with any tool; only the select tool picks
+                // things (the pen: tap or lasso; a finger: tap an image, or long-press to paste).
+                onSelection(e.x, e.y) -> Gesture.SELECT
+                tool == Tool.SELECT && (isPen(e, 0) || imageAt(e.x, e.y) != null) -> Gesture.SELECT
                 isPen(e, 0) -> if (erasing(e)) Gesture.ERASE else Gesture.PEN
                 // A hand resting while the pen is near (or just lifted) isn't a gesture.
                 e.eventTime - lastPenTime < 600 -> Gesture.NONE
                 else -> Gesture.FINGERS
             }
+            if (gesture == Gesture.FINGERS && tool == Tool.SELECT) {
+                val x = e.x; val y = e.y
+                fingerHold = Runnable { onLongPressEmpty(x, y) }.also { postDelayed(it, 500) }
+                grabAt.set(x, y)
+            }
+            if ((gesture == Gesture.PEN || gesture == Gesture.ERASE) && hasSelection) { clearSelection(); gesture = Gesture.NONE }
             if (gesture == Gesture.PEN || gesture == Gesture.ERASE) requestUnbufferedDispatch(e)
         }
         // Pressing the S Pen's button mid-stroke ends the stroke and erases from there.
@@ -443,14 +570,377 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             erasedNow.clear()
         }
         when (gesture) {
+            Gesture.SELECT -> select(e)
             Gesture.PEN -> pen(e)
             Gesture.ERASE -> erase(e)
             Gesture.FINGERS -> fingers(e)
             Gesture.NONE -> {}
         }
+        fingerHold?.let { h ->
+            val moved = e.actionMasked == MotionEvent.ACTION_MOVE && kotlin.math.hypot(e.x - grabAt.x, e.y - grabAt.y) > 12 * resources.displayMetrics.density
+            if (moved || e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL || e.pointerCount > 1) { removeCallbacks(h); fingerHold = null }
+        }
         if (isPen(e, e.actionIndex)) lastPenTime = e.eventTime
         if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) gesture = Gesture.NONE
         return true
+    }
+
+    // ---- select: move and resize images ----
+
+    private var grabbed: NoteImage? = null
+    private val grabAt = PointF()
+
+    private fun toPage(page: Int, x: Float, y: Float) = floatArrayOf(x, y).also { Matrix().apply { pageMatrix(page).invert(this) }.mapPoints(it) }
+
+    /** The topmost image under a screen point. */
+    private fun imageAt(x: Float, y: Float): NoteImage? {
+        val page = pageAt(x, y) ?: return null
+        val pt = toPage(page, x, y)
+        return images.lastOrNull { it.page == page && it.rect.contains(pt[0], pt[1]) }
+    }
+
+    /** Which of the selected image's handles is under a screen point, if any. */
+    private fun handleAt(x: Float, y: Float): Int? {
+        val r = selectedImage?.let { selectionOnScreen(it) } ?: group?.let { groupOnScreen(it) } ?: return null
+        val reach = handleR * 2.4f
+        val corners = if (group != null) handles(r).take(4) else handles(r)
+        return corners.indexOfFirst { (x - it.x) * (x - it.x) + (y - it.y) * (y - it.y) <= reach * reach }.takeIf { it >= 0 }
+    }
+
+    private fun handleHit(x: Float, y: Float) = handleAt(x, y) != null
+
+    private var handle: Int? = null
+    private var longPress: Runnable? = null
+    /** Long-press on an empty spot with the select tool: offer to paste there. */
+    var onLongPressEmpty: (x: Float, y: Float) -> Unit = { _, _ -> }
+    /** Any touch on the page (closes a paste bubble). */
+    var onTouchStart: () -> Unit = {}
+
+    private var fingerHold: Runnable? = null
+
+    // ---- groups: strokes (and images) picked with the lasso, or a tapped stroke ----
+
+    /** A selection of several things on one page. */
+    private class Group(val page: Int, val strokeIds: Set<Long>, val imageIds: Set<Long>)
+    private var group: Group? = null
+        set(value) { field = value; onSelectionChanged(selectedImage); invalidate() }
+
+    val hasSelection get() = selectedImage != null || group != null
+    val selectionIsGroup get() = group != null
+
+    /** While a group is dragged: how it's moved or scaled (page points), drawn as a preview until the fingers lift. */
+    private var groupMatrix: Matrix? = null
+    private var lasso: android.graphics.Path? = null
+    private val lassoPoints = mutableListOf<PointF>()
+    private val lassoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeWidth = 2f * resources.displayMetrics.density; color = 0xFF1E5BD8.toInt()
+        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 8f), 0f)
+    }
+
+    private fun groupBounds(g: Group): RectF? {
+        var r: RectF? = null
+        fun add(b: RectF) { r = r?.apply { union(b) } ?: RectF(b) }
+        strokes.filter { it.id in g.strokeIds }.forEach { s -> s.stroke.shape.computeBoundingBox()?.let { add(RectF(it.xMin, it.yMin, it.xMax, it.yMax)) } }
+        images.filter { it.id in g.imageIds }.forEach { add(it.rect) }
+        return r
+    }
+
+    private fun groupOnScreen(g: Group): RectF? = groupBounds(g)?.let { b ->
+        RectF(b).also { groupMatrix?.mapRect(it); pageMatrix(g.page).mapRect(it); it.inset(-6f, -6f) }
+    }
+
+    /** On the selection (an image, a group) or one of its handles. */
+    private fun onSelection(x: Float, y: Float): Boolean {
+        if (handleAt(x, y) != null) return true
+        selectedImage?.let { if (selectionOnScreen(it).contains(x, y)) return true }
+        group?.let { g -> groupOnScreen(g)?.let { if (it.contains(x, y)) return true } }
+        return false
+    }
+
+    /** The stroke under a screen point on its page (within a few pixels). */
+    private fun strokeAt(x: Float, y: Float): InkStroke? {
+        val page = pageAt(x, y) ?: return null
+        val pt = toPage(page, x, y)
+        val radius = 8f * resources.displayMetrics.density / (scales[page] * zoom)
+        return strokes.lastOrNull { it.page == page && it.hits(pt[0], pt[1], radius) }
+    }
+
+    private enum class Drag { NONE, IMAGE, GROUP_MOVE, GROUP_SCALE, LASSO }
+    private var drag = Drag.NONE
+    private val anchor = PointF()
+
+    private fun select(e: MotionEvent) {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                handle = handleAt(e.x, e.y)
+                val g = group
+                val gScreen = g?.let { groupOnScreen(it) }
+                when {
+                    // A handle or the inside of what's selected: move or resize it.
+                    selectedImage != null && (handle != null || selectionOnScreen(selectedImage!!).contains(e.x, e.y)) -> startImageDrag(selectedImage!!, e)
+                    g != null && gScreen != null && handle != null -> {
+                        drag = Drag.GROUP_SCALE
+                        val b = groupBounds(g)!!
+                        // The opposite corner stays put.
+                        anchor.set(if (handle == 0 || handle == 3) b.right else b.left, if (handle == 0 || handle == 1) b.bottom else b.top)
+                    }
+                    g != null && gScreen != null && gScreen.contains(e.x, e.y) -> {
+                        drag = Drag.GROUP_MOVE
+                        toPage(g.page, e.x, e.y).let { grabAt.set(it[0], it[1]) }
+                    }
+                    else -> {
+                        // Picking something new (select tool only).
+                        cropping = false
+                        group = null
+                        val img = imageAt(e.x, e.y)
+                        if (img != null) { selectedImage = img; startImageDrag(img, e); return }
+                        selectedImage = null
+                        if (!isPen(e, 0)) { drag = Drag.NONE; return }
+                        // The pen on an empty spot: a lasso (or, held still, paste here).
+                        drag = Drag.LASSO
+                        lassoPoints.clear(); lassoPoints += PointF(e.x, e.y)
+                        lasso = android.graphics.Path().apply { moveTo(e.x, e.y) }
+                        val x = e.x; val y = e.y
+                        grabAt.set(x, y)
+                        longPress = Runnable { lasso = null; drag = Drag.NONE; onLongPressEmpty(x, y); invalidate() }.also { postDelayed(it, 500) }
+                    }
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                longPress?.let { if (kotlin.math.hypot(e.x - grabAt.x, e.y - grabAt.y) > 12 * resources.displayMetrics.density) { removeCallbacks(it); longPress = null } }
+                when (drag) {
+                    Drag.IMAGE -> moveImage(e)
+                    Drag.LASSO -> { lassoPoints += PointF(e.x, e.y); lasso?.lineTo(e.x, e.y); invalidate() }
+                    Drag.GROUP_MOVE -> {
+                        val g = group ?: return
+                        val pt = toPage(g.page, e.x, e.y)
+                        var dx = pt[0] - grabAt.x
+                        var dy = pt[1] - grabAt.y
+                        // Keep it on the page.
+                        groupBounds(g)?.let { b ->
+                            val size = sizes[g.page]
+                            dx = dx.coerceIn(-b.left, size.width - b.right)
+                            dy = dy.coerceIn(-b.top, size.height - b.bottom)
+                        }
+                        groupMatrix = Matrix().apply { setTranslate(dx, dy) }
+                        invalidate()
+                    }
+                    Drag.GROUP_SCALE -> {
+                        val g = group ?: return
+                        val b = groupBounds(g) ?: return
+                        val pt = toPage(g.page, e.x, e.y)
+                        // Uniform scale about the opposite corner, following the farther-moved axis.
+                        val sx = abs(pt[0] - anchor.x) / b.width().coerceAtLeast(1f)
+                        val sy = abs(pt[1] - anchor.y) / b.height().coerceAtLeast(1f)
+                        val k = maxOf(sx, sy).coerceIn(0.1f, 10f)
+                        groupMatrix = Matrix().apply { setScale(k, k, anchor.x, anchor.y) }
+                        invalidate()
+                    }
+                    Drag.NONE -> {}
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                longPress?.let { removeCallbacks(it) }; longPress = null
+                when (drag) {
+                    Drag.IMAGE -> endImageDrag()
+                    Drag.LASSO -> finishLasso(e)
+                    Drag.GROUP_MOVE, Drag.GROUP_SCALE -> group?.let { g -> groupMatrix?.let { m -> applyToGroup(g, m) } }
+                    Drag.NONE -> {}
+                }
+                groupMatrix = null
+                drag = Drag.NONE
+                handle = null
+                invalidate()
+            }
+        }
+    }
+
+    private fun startImageDrag(img: NoteImage, e: MotionEvent) {
+        drag = Drag.IMAGE
+        grabbed = img
+        toPage(img.page, e.x, e.y).let { grabAt.set(it[0], it[1]) }
+    }
+
+    private fun moveImage(e: MotionEvent) {
+        val start = grabbed ?: return
+        val cur = selectedImage ?: return
+        val pt = toPage(start.page, e.x, e.y)
+        val h = handle
+        val moved = when {
+            h == null -> {
+                // Keep it on the page.
+                val size = sizes[start.page]
+                val dx = (pt[0] - grabAt.x).coerceIn(-start.rect.left, size.width - start.rect.right)
+                val dy = (pt[1] - grabAt.y).coerceIn(-start.rect.top, size.height - start.rect.bottom)
+                cur.with(rect = RectF(start.rect).apply { offset(dx, dy) })
+            }
+            cropping -> cropTo(start, h, pt[0], pt[1])
+            else -> resizeTo(start, h, pt[0], pt[1])
+        }
+        images.replaceAll { if (it.id == moved.id) moved else it }
+        selectedImage = moved
+    }
+
+    private fun endImageDrag() {
+        val start = grabbed
+        val end = selectedImage
+        if (start != null && end != null && (start.rect != end.rect || start.crop != end.crop)) record(InkChange.ImageChanged(start, end))
+        grabbed = null
+    }
+
+    /** What the lasso went around: strokes mostly inside it, images whose middle is; a pen tap picks the stroke or image there. */
+    private fun finishLasso(e: MotionEvent) {
+        val pts = lassoPoints.toList()
+        lasso = null
+        val first = pts.firstOrNull() ?: return
+        val page = pageAt(first.x, first.y) ?: return
+        val inv = Matrix().also { pageMatrix(page).invert(it) }
+        val poly = pts.map { p -> floatArrayOf(p.x, p.y).also { inv.mapPoints(it) } }
+        val span = pts.maxOf { kotlin.math.hypot(it.x - first.x, it.y - first.y) }
+        if (span < 12 * resources.displayMetrics.density) {
+            // A tap: the stroke under it.
+            strokeAt(e.x, e.y)?.let { group = Group(page, setOf(it.id), emptySet()) }
+            return
+        }
+        fun inside(x: Float, y: Float): Boolean {
+            var c = false
+            var j = poly.size - 1
+            for (i in poly.indices) {
+                val (xi, yi) = poly[i][0] to poly[i][1]
+                val (xj, yj) = poly[j][0] to poly[j][1]
+                if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c
+                j = i
+            }
+            return c
+        }
+        val picked = strokes.filter { s ->
+            s.page == page && run {
+                val inputs = s.stroke.inputs
+                var n = 0
+                for (k in 0 until inputs.size) { val p = inputs[k]; if (inside(p.x, p.y)) n++ }
+                inputs.size > 0 && n >= inputs.size * 0.6f
+            }
+        }.map { it.id }.toSet()
+        val pickedImages = images.filter { it.page == page && inside(it.rect.centerX(), it.rect.centerY()) }.map { it.id }.toSet()
+        when {
+            picked.isEmpty() && pickedImages.size == 1 -> selectedImage = images.first { it.id in pickedImages }
+            picked.isNotEmpty() || pickedImages.isNotEmpty() -> group = Group(page, picked, pickedImages)
+        }
+    }
+
+    /** Applies [m] to the group's strokes and images, as one undoable change. */
+    private fun applyToGroup(g: Group, m: Matrix) {
+        val oldStrokes = strokes.filter { it.id in g.strokeIds }
+        val oldImages = images.filter { it.id in g.imageIds }
+        val newStrokes = oldStrokes.map { transformStroke(it, m) }
+        val newImages = oldImages.map { img -> img.with(rect = RectF(img.rect).also { m.mapRect(it) }) }
+        replace(oldStrokes, newStrokes, oldImages, newImages)
+    }
+
+    private fun replace(oldStrokes: List<InkStroke>, newStrokes: List<InkStroke>, oldImages: List<NoteImage>, newImages: List<NoteImage>) {
+        val so = oldStrokes.map { it.id }.toSet()
+        val io = oldImages.map { it.id }.toSet()
+        strokes.removeAll { it.id in so }; strokes += newStrokes
+        images.removeAll { it.id in io }; images += newImages
+        record(InkChange.Replaced(oldStrokes, newStrokes, oldImages, newImages))
+        invalidate()
+    }
+
+    /** The selection (a group, or the image) as strokes and images, for copying. */
+    fun selectionContents(): Pair<List<InkStroke>, List<NoteImage>> {
+        group?.let { g -> return strokes.filter { it.id in g.strokeIds } to images.filter { it.id in g.imageIds } }
+        selectedImage?.let { return emptyList<InkStroke>() to listOf(it) }
+        return emptyList<InkStroke>() to emptyList()
+    }
+
+    /** A picture of what's selected (white behind it), for pasting into other apps. */
+    fun renderSelection(): Bitmap? {
+        val (st, im) = selectionContents()
+        var b: RectF? = null
+        st.forEach { s -> s.stroke.shape.computeBoundingBox()?.let { bb -> val r = RectF(bb.xMin, bb.yMin, bb.xMax, bb.yMax); b = b?.apply { union(r) } ?: r } }
+        im.forEach { b = b?.apply { union(it.rect) } ?: RectF(it.rect) }
+        val bounds = b?.apply { inset(-4f, -4f) } ?: return null
+        val k = (2048f / maxOf(bounds.width(), bounds.height())).coerceAtMost(4f)
+        val bmp = Bitmap.createBitmap((bounds.width() * k).toInt().coerceAtLeast(1), (bounds.height() * k).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        val m = Matrix().apply { setTranslate(-bounds.left, -bounds.top); postScale(k, k) }
+        c.concat(m)
+        im.forEach { c.drawBitmap(it.bitmap, it.source(), it.rect, bitmapPaint) }
+        st.forEach { strokeRenderer.draw(c, it.stroke, m) }
+        return bmp
+    }
+
+    /** Deletes what's selected. */
+    fun deleteSelection() {
+        group?.let { g ->
+            replace(strokes.filter { it.id in g.strokeIds }, emptyList(), images.filter { it.id in g.imageIds }, emptyList())
+            group = null
+            return
+        }
+        deleteSelected()
+    }
+
+    /** A copy of what's selected, a little below and to the right; the copy is selected. */
+    fun duplicateSelection() {
+        val g = group ?: return duplicateSelected()
+        val (st, im) = selectionContents()
+        val m = Matrix().apply { setTranslate(12f, 12f) }
+        pasteContents(st, im, g.page, m)
+    }
+
+    /**
+     * Pastes copied strokes and images onto the page at the screen point ([x], [y]) (or the middle
+     * of the screen), centred there; they arrive selected.
+     */
+    fun pasteContents(st: List<InkStroke>, im: List<NoteImage>, x: Float = width / 2f, y: Float = height / 2f) {
+        val page = pageAt(x, y) ?: return
+        var b: RectF? = null
+        st.forEach { s -> s.stroke.shape.computeBoundingBox()?.let { bb -> val r = RectF(bb.xMin, bb.yMin, bb.xMax, bb.yMax); b = b?.apply { union(r) } ?: r } }
+        im.forEach { b = b?.apply { union(it.rect) } ?: RectF(it.rect) }
+        val bounds = b ?: return
+        val pt = toPage(page, x, y)
+        val size = sizes[page]
+        val dx = (pt[0] - bounds.centerX()).coerceIn(-bounds.left, (size.width - bounds.right).coerceAtLeast(-bounds.left))
+        val dy = (pt[1] - bounds.centerY()).coerceIn(-bounds.top, (size.height - bounds.bottom).coerceAtLeast(-bounds.top))
+        pasteContents(st, im, page, Matrix().apply { setTranslate(dx, dy) })
+    }
+
+    private fun pasteContents(st: List<InkStroke>, im: List<NoteImage>, page: Int, m: Matrix) {
+        val newStrokes = st.map { transformStroke(it, m, id = InkIds.next(), page = page) }
+        val newImages = im.map { it.with(id = InkIds.next(), page = page, rect = RectF(it.rect).also { r -> m.mapRect(r) }) }
+        replace(emptyList(), newStrokes, emptyList(), newImages)
+        selectedImage = null
+        group = Group(page, newStrokes.map { it.id }.toSet(), newImages.map { it.id }.toSet())
+    }
+
+    /** Resizing from corner [h]: the opposite corner stays put, the proportions are kept. */
+    private fun resizeTo(start: NoteImage, h: Int, x: Float, y: Float): NoteImage {
+        val r = start.rect
+        val (ax, ay) = when (h) { 0 -> r.right to r.bottom; 1 -> r.left to r.bottom; 2 -> r.left to r.top; else -> r.right to r.top }
+        val aspect = r.height() / r.width()
+        val w = maxOf(abs(x - ax), abs(y - ay) / aspect, 12f)
+        val hgt = w * aspect
+        val left = if (x < ax) ax - w else ax
+        val top = if (y < ay) ay - hgt else ay
+        return start.with(rect = RectF(left, top, left + w, top + hgt))
+    }
+
+    /** Cropping with handle [h]: that side (or corner) of the shown part moves, within the whole picture. */
+    private fun cropTo(start: NoteImage, h: Int, x: Float, y: Float): NoteImage {
+        val full = start.fullRect()
+        val r = RectF(start.rect)
+        val min = 8f
+        val moveLeft = h == 0 || h == 3 || h == 7
+        val moveRight = h == 1 || h == 2 || h == 5
+        val moveTop = h == 0 || h == 1 || h == 4
+        val moveBottom = h == 2 || h == 3 || h == 6
+        if (moveLeft) r.left = x.coerceIn(full.left, r.right - min)
+        if (moveRight) r.right = x.coerceIn(r.left + min, full.right)
+        if (moveTop) r.top = y.coerceIn(full.top, r.bottom - min)
+        if (moveBottom) r.bottom = y.coerceIn(r.top + min, full.bottom)
+        val crop = RectF((r.left - full.left) / full.width(), (r.top - full.top) / full.height(), (r.right - full.left) / full.width(), (r.bottom - full.top) / full.height())
+        return start.with(rect = r, crop = crop)
     }
 
     /** The eraser end of the pen, the pen's side button, or the eraser tool. */
@@ -539,6 +1029,12 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private var flingHandled = false
 
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onSingleTapUp(e: MotionEvent): Boolean {
+            // Tapping anywhere off the selected image is done with it.
+            if (hasSelection && !onSelection(e.x, e.y)) clearSelection()
+            return true
+        }
+
         override fun onDown(e: MotionEvent): Boolean {
             scroller.forceFinished(true); settle?.cancel()
             if (rects.isNotEmpty()) {
@@ -662,9 +1158,31 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     fun redo() { redo.removeLastOrNull()?.let { apply(it, back = false); undo.addLast(it); notifyUndo(); onInkChanged() } }
 
     private fun apply(c: InkChange, back: Boolean) {
+        when (c) {
+            is InkChange.ImageAdded -> { if (back) images.removeAll { it.id == c.image.id } else images += c.image; selectedImage = null; invalidate(); return }
+            is InkChange.ImageRemoved -> { if (back) images += c.image else images.removeAll { it.id == c.image.id }; selectedImage = null; invalidate(); return }
+            is InkChange.ImageChanged -> {
+                val to = if (back) c.before else c.after
+                images.replaceAll { if (it.id == to.id) to else it }
+                if (selectedImage?.id == to.id) selectedImage = to
+                invalidate(); return
+            }
+            is InkChange.Replaced -> {
+                val (rs, ast, ri, ai) = if (back) listOf(c.addedStrokes, c.removedStrokes, c.addedImages, c.removedImages) else listOf(c.removedStrokes, c.addedStrokes, c.removedImages, c.addedImages)
+                @Suppress("UNCHECKED_CAST") run {
+                    val removeS = (rs as List<InkStroke>).map { it.id }.toSet()
+                    val removeI = (ri as List<NoteImage>).map { it.id }.toSet()
+                    strokes.removeAll { it.id in removeS }; strokes += ast as List<InkStroke>
+                    images.removeAll { it.id in removeI }; images += ai as List<NoteImage>
+                }
+                selectedImage = null; group = null; invalidate(); return
+            }
+            else -> {}
+        }
         val (add, remove) = when (c) {
             is InkChange.Added -> if (back) emptyList<InkStroke>() to c.strokes else c.strokes to emptyList()
             is InkChange.Erased -> if (back) c.strokes to emptyList() else emptyList<InkStroke>() to c.strokes
+            else -> emptyList<InkStroke>() to emptyList()
         }
         val ids = remove.map { it.id }.toSet()
         strokes.removeAll { it.id in ids }

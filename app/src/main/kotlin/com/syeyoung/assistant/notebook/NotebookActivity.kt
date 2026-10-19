@@ -33,6 +33,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -75,11 +77,31 @@ class NotebookActivity : ComponentActivity() {
             onInkChanged = { scheduleSave() }
             onPageChanged = { p, n -> ui.page = p; ui.pages = n }
             onUndoChanged = { u, r -> ui.canUndo = u; ui.canRedo = r }
+            onSelectionChanged = { img -> ui.imageSelected = hasSelection; ui.groupSelected = selectionIsGroup; if (img == null) ui.cropping = false }
+            onSelectionFrame = { r -> ui.selectionFrame = r }
+            onLongPressEmpty = { x, y -> ui.pasteAt = android.graphics.PointF(x, y) }
+            onTouchStart = { ui.pasteAt = null }
         }
         ui.applyTo(view)
         val stack = FrameLayout(this).apply {
             addView(view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(ink, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            // Images dragged in (from another app beside this one, or within the screen).
+            setOnDragListener { _, event ->
+                when (event.action) {
+                    android.view.DragEvent.ACTION_DRAG_STARTED -> (0 until event.clipDescription.mimeTypeCount).any { event.clipDescription.getMimeType(it).startsWith("image/") }
+                    android.view.DragEvent.ACTION_DROP -> {
+                        val permissions = requestDragAndDropPermissions(event)
+                        val uris = (0 until event.clipData.itemCount).mapNotNull { event.clipData.getItemAt(it).uri }
+                        lifecycleScope.launch {
+                            uris.forEach { insertImage(it, event.x, event.y) }
+                            permissions?.release()
+                        }
+                        true
+                    }
+                    else -> true
+                }
+            }
         }
 
         setContent {
@@ -87,7 +109,7 @@ class NotebookActivity : ComponentActivity() {
                 val changed = { ui.applyTo(view); ui.save(prefs()) }
                 Box(Modifier.fillMaxSize()) {
                     Column(Modifier.fillMaxSize()) {
-                        NotebookHeader(ui, title, onBack = ::finish, onSearch = ::search, onHit = ::showHit, onChange = { changed(); scheduleSave() })
+                        NotebookHeader(ui, title, onBack = ::finish, onSearch = ::search, onHit = ::showHit, onChange = { changed(); scheduleSave() }, onPaste = ::paste)
                         Row(Modifier.fillMaxWidth().weight(1f)) {
                             Box(Modifier.fillMaxHeight().weight(1f)) {
                                 AndroidView({ stack }, Modifier.fillMaxSize())
@@ -99,6 +121,32 @@ class NotebookActivity : ComponentActivity() {
                         }
                     }
                     if (ui.addingPage) AddPageDialog(ui) { style, atEnd -> addPage(style, atEnd); ui.save(prefs()) }
+                    // Picking an image to insert.
+                    val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let { lifecycleScope.launch { insertImage(it) } } }
+                    LaunchedEffect(ui.pickingImage) {
+                        if (ui.pickingImage) { ui.pickingImage = false; pick.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                    }
+                    // The bar for the selected image, floating just above it (below it near the top).
+                    val frame = ui.selectionFrame
+                    if (ui.imageSelected && frame != null) FloatingBar(frame, top = 57f) {
+                        if (ui.cropping) {
+                            TextButton({ view.resetCrop() }) { Text("Reset") }
+                            TextButton({ ui.cropping = false; view.cropping = false }) { Text("Done") }
+                        } else {
+                            TextButton({ copySelected(); view.deleteSelection() }) { Text("Cut") }
+                            TextButton(::copySelected) { Text("Copy") }
+                            TextButton({ view.duplicateSelection() }) { Text("Duplicate") }
+                            if (!ui.groupSelected) TextButton({ ui.cropping = true; view.cropping = true }) { Text("Crop") }
+                            TextButton({ view.deleteSelection() }) { Text("Delete", color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
+                        }
+                    }
+                    // Long-press on an empty spot: paste there.
+                    ui.pasteAt?.let { at ->
+                        FloatingBar(android.graphics.RectF(at.x, at.y, at.x, at.y), top = 57f) {
+                            TextButton({ ui.pasteAt = null; paste(at.x, at.y) }) { Text("Paste") }
+                            TextButton({ ui.pasteAt = null; ui.pickingImage = true }) { Text("Insert image…") }
+                        }
+                    }
                     if (ui.browsing) PageBrowser(ui, ::thumbnail, onGo = { view.goTo(it, animate = false) }, onChange = { scheduleSave() })
                     Dialogs()
                 }
@@ -115,9 +163,11 @@ class NotebookActivity : ComponentActivity() {
             }.onSuccess { (opened, sizes) ->
                 file = opened.file
                 ui.bookmarks = opened.bookmarks
-                view.setDocument(sizes, opened.strokes)
+                view.setDocument(sizes, opened.strokes, opened.images)
                 // Diagnostics (adb only): open at a given zoom.
                 intent.getFloatExtra("zoom", 0f).takeIf { it > 0f }?.let { z -> view.post { view.zoomForTest(z) } }
+                // Diagnostics (adb only): insert an image file.
+                intent.getStringExtra("insertImage")?.let { path -> lifecycleScope.launch { insertImage(android.net.Uri.fromFile(java.io.File(path))) } }
                 // Diagnostics (adb only): zoom slowly, as a long pinch would.
                 intent.getFloatExtra("zoomTo", 0f).takeIf { it > 0f }?.let { z ->
                     view.postDelayed({
@@ -186,10 +236,11 @@ class NotebookActivity : ComponentActivity() {
         val f = file ?: return
         if (!dirty) return
         val strokes = view.strokesSnapshot()
+        val images = view.imagesSnapshot()
         val bookmarks = ui.bookmarks
         dirty = false
         ui.status = "Saving…"
-        val result = withContext(Dispatchers.IO) { io.withLock { runCatching { f.save(strokes, bookmarks) } } }
+        val result = withContext(Dispatchers.IO) { io.withLock { runCatching { f.save(strokes, images, bookmarks) } } }
         result.onSuccess { ui.status = "" }.onFailure { e ->
             dirty = true
             ui.status = "Not saved"
@@ -210,11 +261,12 @@ class NotebookActivity : ComponentActivity() {
     private fun exportPages(pages: Set<Int>, then: (java.io.File) -> Unit) {
         val f = file ?: return
         val strokes = view.strokesSnapshot()
+        val images = view.imagesSnapshot()
         lifecycleScope.launch {
             val dir = java.io.File(cacheDir, "exports").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
             val name = title.removeSuffix(".pdf") + if (pages.size == 1) " p${pages.first() + 1}.pdf" else " (${pages.size} pages).pdf"
             val out = java.io.File(dir, name.replace('/', '-'))
-            runCatching { withContext(Dispatchers.IO) { io.withLock { f.export(strokes, pages, out) } } }
+            runCatching { withContext(Dispatchers.IO) { io.withLock { f.export(strokes, images, pages, out) } } }
                 .onSuccess { then(out) }
                 .onFailure { e -> Toast.makeText(this@NotebookActivity, "Couldn't export: ${e.message}", Toast.LENGTH_LONG).show() }
         }
@@ -255,6 +307,76 @@ class NotebookActivity : ComponentActivity() {
         ui.addAfter = null
         val after = if (atEnd) view.pageCount - 1 else at
         pageEdit({ it.insertPage(after, ref = at, style = style) }, land = after + 1) { old -> if (old > after) old + 1 else old }
+    }
+
+    // ---- images: insert, paste, drop, copy ----
+
+    /** Reads an image (as PNG or JPEG; other kinds are converted to PNG) and places it. */
+    private suspend fun insertImage(uri: android.net.Uri, x: Float? = null, y: Float? = null) {
+        val read = withContext(Dispatchers.IO) {
+            runCatching {
+                val type = contentResolver.getType(uri) ?: "image/png"
+                val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+                if (type == "image/png" || type == "image/jpeg") bytes to type
+                else {
+                    val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching null
+                    java.io.ByteArrayOutputStream().also { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }.toByteArray() to "image/png"
+                }
+            }.getOrNull()
+        }
+        val (bytes, mime) = read ?: return Toast.makeText(this, "Couldn't read that image", Toast.LENGTH_SHORT).show()
+        val placed = if (x != null && y != null) view.addImage(bytes, mime, x, y) else view.addImage(bytes, mime)
+        if (!placed) Toast.makeText(this, "Couldn't read that image", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Pastes an image from the clipboard (a screenshot, or one copied here or in another app). */
+    private fun paste() = paste(null, null)
+
+    private fun paste(x: Float?, y: Float?) {
+        val clip = getSystemService(android.content.ClipboardManager::class.java).primaryClip
+        val uri = clip?.let { c -> (0 until c.itemCount).mapNotNull { c.getItemAt(it).uri }.firstOrNull() }
+        // Still what we copied: paste the real strokes (and images), not the picture of them.
+        if (uri != null && uri == NoteClipboard.systemUri && (NoteClipboard.strokes.isNotEmpty() || NoteClipboard.images.isNotEmpty())) {
+            if (x != null && y != null) view.pasteContents(NoteClipboard.strokes, NoteClipboard.images, x, y) else view.pasteContents(NoteClipboard.strokes, NoteClipboard.images)
+            return
+        }
+        if (uri == null || contentResolver.getType(uri)?.startsWith("image/") != true) {
+            Toast.makeText(this, "No image on the clipboard", Toast.LENGTH_SHORT).show()
+            return
+        }
+        lifecycleScope.launch { insertImage(uri, x, y) }
+    }
+
+    /**
+     * Copies what's selected: kept here as strokes and images (to paste back as they were), and on
+     * the clipboard as a picture (the image itself, or a drawing of the handwriting) for other apps.
+     */
+    private fun copySelected() {
+        val (st, im) = view.selectionContents()
+        if (st.isEmpty() && im.isEmpty()) return
+        val dir = java.io.File(cacheDir, "exports").apply { mkdirs() }
+        val f = if (st.isEmpty() && im.size == 1) {
+            java.io.File(dir, "image-${im[0].id}." + if (im[0].mime == "image/jpeg") "jpg" else "png").apply { writeBytes(im[0].bytes) }
+        } else {
+            val bmp = view.renderSelection() ?: return
+            java.io.File(dir, "selection-${System.currentTimeMillis()}.png").apply { outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) } }
+        }
+        val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.files", f)
+        NoteClipboard.strokes = st
+        NoteClipboard.images = im
+        NoteClipboard.systemUri = uri
+        getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newUri(contentResolver, "Notebook selection", uri))
+        Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Ctrl+V on a keyboard pastes. */
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_V && event.isCtrlPressed) { paste(); return true }
+        if (keyCode == android.view.KeyEvent.KEYCODE_C && event.isCtrlPressed) { copySelected(); return true }
+        if (keyCode == android.view.KeyEvent.KEYCODE_X && event.isCtrlPressed) { copySelected(); view.deleteSelection(); return true }
+        if ((keyCode == android.view.KeyEvent.KEYCODE_DEL || keyCode == android.view.KeyEvent.KEYCODE_FORWARD_DEL) && view.hasSelection) { view.deleteSelection(); return true }
+        if (keyCode == android.view.KeyEvent.KEYCODE_Z && event.isCtrlPressed) { if (event.isShiftPressed) view.redo() else view.undo(); return true }
+        return super.onKeyDown(keyCode, event)
     }
 
     // ---- search over the PDF's text ----
@@ -330,6 +452,28 @@ class NotebookActivity : ComponentActivity() {
     }
 }
 
+/**
+ * A small bar of actions floating over the notebook, centred above [anchor] (screen pixels of the
+ * notebook view), or below it when there's no room above. [top] is the header's height in dp.
+ */
+@Composable
+private fun FloatingBar(anchor: android.graphics.RectF, top: Float, content: @Composable () -> Unit) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    var size by remember { androidx.compose.runtime.mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+        val screenW = with(density) { maxWidth.toPx() }
+        val headerPx = with(density) { top.dp.toPx() }
+        val gap = with(density) { 12.dp.toPx() }
+        val above = anchor.top + headerPx - gap - size.height
+        val y = if (above > headerPx) above else anchor.bottom + headerPx + gap
+        val x = (anchor.centerX() - size.width / 2f).coerceIn(gap, (screenW - size.width - gap).coerceAtLeast(gap))
+        androidx.compose.material3.Surface(
+            Modifier.offset { androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()) }.onSizeChanged { size = it },
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(50), shadowElevation = 6.dp,
+        ) { Row(Modifier.padding(horizontal = 6.dp)) { content() } }
+    }
+}
+
 /** The toolbar's state: tool, colours and sizes (remembered), where it sits, and page info. */
 class ToolbarState {
     var tool by mutableStateOf(Tool.PEN)
@@ -357,6 +501,15 @@ class ToolbarState {
     var addAfter by mutableStateOf<Int?>(null)
     var pageStyle by mutableStateOf(PageStyle.DOTS)
     var searching by mutableStateOf(false)
+    var pickingImage by mutableStateOf(false)
+    /** Something is selected (an image, or a lasso group). */
+    var imageSelected by mutableStateOf(false)
+    var groupSelected by mutableStateOf(false)
+    var cropping by mutableStateOf(false)
+    /** The selected image's frame on screen, to float its bar above. */
+    var selectionFrame by mutableStateOf<android.graphics.RectF?>(null)
+    /** Where a long-press asked to paste. */
+    var pasteAt by mutableStateOf<android.graphics.PointF?>(null)
     var query by mutableStateOf("")
     var hits by mutableStateOf<List<SearchHit>>(emptyList())
     var hitIndex by mutableIntStateOf(0)

@@ -20,6 +20,10 @@ import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
+import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
+import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAppearanceStream
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
@@ -44,8 +48,11 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
         private val CA = COSName.getPDFName("CA")
         private val LOWER_CA = COSName.getPDFName("ca")
         private val BOOKMARK = COSName.getPDFName("AssistantBookmark")
+        private val IMAGE = COSName.getPDFName("AssistantImage")
+        private val IMAGE_TYPE = COSName.getPDFName("AssistantImageType")
+        private val IMAGE_CROP = COSName.getPDFName("AssistantImageCrop")
 
-        class Opened(val file: NotebookFile, val strokes: List<InkStroke>, val bookmarks: Set<Int>)
+        class Opened(val file: NotebookFile, val strokes: List<InkStroke>, val images: List<NoteImage>, val bookmarks: Set<Int>)
 
         /** Opens [uri]: its strokes and bookmarked pages, with the base written to a working file. */
         fun open(context: Context, uri: Uri, nextId: () -> Long): Opened {
@@ -59,11 +66,27 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
             }
             val base = File(dir, "base.pdf")
             val strokes = mutableListOf<InkStroke>()
+            val images = mutableListOf<NoteImage>()
             load(original).use { doc ->
                 doc.pages.forEachIndexed { index, page ->
                     val annots = page.cosObject.getDictionaryObject(COSName.ANNOTS) as? COSArray ?: return@forEachIndexed
+                    val crop = page.cropBox
                     for (i in annots.size() - 1 downTo 0) {
                         val a = annots.getObject(i) as? COSDictionary ?: continue
+                        // Our images: the bytes as imported, and where the annotation sits.
+                        (a.getDictionaryObject(IMAGE) as? com.tom_roush.pdfbox.cos.COSStream)?.let { stream ->
+                            annots.remove(i)
+                            runCatching {
+                                val bytes = stream.createRawInputStream().use { it.readBytes() }
+                                val rect = (a.getDictionaryObject(COSName.RECT) as COSArray).toFloatArray()
+                                val bitmap = NoteImage.decode(bytes) ?: return@runCatching
+                                val r = android.graphics.RectF(rect[0] - crop.lowerLeftX, crop.upperRightY - rect[3], rect[2] - crop.lowerLeftX, crop.upperRightY - rect[1])
+                                val c = (a.getDictionaryObject(IMAGE_CROP) as? COSArray)?.toFloatArray()
+                                val crop = if (c != null && c.size == 4) android.graphics.RectF(c[0], c[1], c[2], c[3]) else android.graphics.RectF(0f, 0f, 1f, 1f)
+                                images += NoteImage(nextId(), index, r, bytes, a.getString(IMAGE_TYPE) ?: "image/png", bitmap, crop)
+                            }
+                            continue
+                        }
                         val data = (a.getDictionaryObject(INK) as? COSString)?.bytes ?: continue
                         annots.remove(i)
                         runCatching {
@@ -78,7 +101,7 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
                 val bookmarks = takeBookmarks(doc)
                 doc.save(base)
                 original.delete()
-                return Opened(NotebookFile(context, uri, base), strokes, bookmarks)
+                return Opened(NotebookFile(context, uri, base), strokes, images, bookmarks)
             }
         }
 
@@ -107,9 +130,9 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
     }
 
     /** Writes the base plus [strokes] and [bookmarks] to the notebook's file (checked to be a readable PDF first). */
-    fun save(strokes: List<InkStroke>, bookmarks: Set<Int>) {
+    fun save(strokes: List<InkStroke>, images: List<NoteImage>, bookmarks: Set<Int>) {
         val out = File(base.parentFile, "save.pdf")
-        val pageCount = write(strokes, bookmarks, out)
+        val pageCount = write(strokes, images, bookmarks, out)
         PdfRenderer(ParcelFileDescriptor.open(out, ParcelFileDescriptor.MODE_READ_ONLY)).use {
             check(it.pageCount == pageCount) { "the saved PDF came out wrong (${it.pageCount} of $pageCount pages); the original is untouched" }
         }
@@ -118,18 +141,24 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
     }
 
     /** Just [pages] (with their writing) as a PDF of their own, for sharing or printing. */
-    fun export(strokes: List<InkStroke>, pages: Set<Int>, out: File) {
-        write(strokes.filter { it.page in pages }, emptySet(), out, keep = pages)
+    fun export(strokes: List<InkStroke>, images: List<NoteImage>, pages: Set<Int>, out: File) {
+        write(strokes.filter { it.page in pages }, images.filter { it.page in pages }, emptySet(), out, keep = pages)
     }
 
     /** Deletes [indices] (several pages at once). */
     fun deletePages(indices: Set<Int>) = edit { doc -> indices.sortedDescending().forEach { if (it < doc.numberOfPages) doc.removePage(it) } }
 
     /** The base plus [strokes] and [bookmarks], to [out]; only the pages in [keep] if given. Returns the page count. */
-    private fun write(strokes: List<InkStroke>, bookmarks: Set<Int>, out: File, keep: Set<Int>? = null): Int {
+    private fun write(strokes: List<InkStroke>, images: List<NoteImage>, bookmarks: Set<Int>, out: File, keep: Set<Int>? = null): Int {
         var pageCount = 0
         load(base).use { doc ->
             val pages = doc.pages.toList()
+            // Images first, so the ink is drawn over them.
+            images.groupBy { it.page }.forEach { (index, list) ->
+                val page = pages.getOrNull(index) ?: return@forEach
+                val annots = (page.cosObject.getDictionaryObject(COSName.ANNOTS) as? COSArray) ?: COSArray().also { page.cosObject.setItem(COSName.ANNOTS, it) }
+                list.forEach { img -> runCatching { annots.add(imageAnnotation(doc, page, img)) } }
+            }
             strokes.groupBy { it.page }.forEach { (index, list) ->
                 val page = pages.getOrNull(index) ?: return@forEach
                 val annots = (page.cosObject.getDictionaryObject(COSName.ANNOTS) as? COSArray) ?: COSArray().also { page.cosObject.setItem(COSName.ANNOTS, it) }
@@ -175,6 +204,41 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
         out.delete()
         load(base).use { doc -> change(doc); if (!out.exists()) doc.save(out) }
         out.renameTo(base)
+    }
+
+    /**
+     * A PDF stamp annotation showing [img] (so any reader shows it), holding the bytes as imported
+     * so it can be moved and resized here again.
+     */
+    private fun imageAnnotation(doc: PDDocument, page: PDPage, img: NoteImage): COSDictionary {
+        val crop = page.cropBox
+        val rect = floatArrayOf(crop.lowerLeftX + img.rect.left, crop.upperRightY - img.rect.bottom, crop.lowerLeftX + img.rect.right, crop.upperRightY - img.rect.top)
+        val x = if (img.mime == "image/jpeg") JPEGFactory.createFromByteArray(doc, img.bytes)
+        else LosslessFactory.createFromImage(doc, android.graphics.BitmapFactory.decodeByteArray(img.bytes, 0, img.bytes.size))
+        val ap = PDAppearanceStream(doc)
+        ap.bBox = PDRectangle(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+        ap.resources = com.tom_roush.pdfbox.pdmodel.PDResources()
+        // The whole picture, clipped to the shown (cropped) part.
+        val full = img.fullRect()
+        PDPageContentStream(doc, ap).use {
+            it.saveGraphicsState()
+            it.addRect(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
+            it.clip()
+            it.drawImage(x, crop.lowerLeftX + full.left, crop.upperRightY - full.bottom, full.width(), full.height())
+            it.restoreGraphicsState()
+        }
+        val raw = doc.document.createCOSStream()
+        raw.createRawOutputStream().use { it.write(img.bytes) }
+        return COSDictionary().apply {
+            setItem(COSName.TYPE, COSName.ANNOT)
+            setItem(COSName.SUBTYPE, COSName.getPDFName("Stamp"))
+            setItem(COSName.RECT, floats(*rect))
+            setItem(COSName.F, COSInteger.get(4)) // print
+            setItem(COSName.AP, COSDictionary().apply { setItem(COSName.N, ap.cosObject) })
+            setItem(IMAGE, raw)
+            setString(IMAGE_TYPE, img.mime)
+            setItem(IMAGE_CROP, floats(img.crop.left, img.crop.top, img.crop.right, img.crop.bottom))
+        }
     }
 
     /** A PDF ink annotation for [s]: the input points as its InkList, and its exact outline as its appearance. */

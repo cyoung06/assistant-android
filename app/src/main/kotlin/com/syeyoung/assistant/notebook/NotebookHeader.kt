@@ -65,7 +65,7 @@ import androidx.compose.ui.unit.sp
 
 /** The bar across the top, as in Noteshelf: back, the title, the page sidebar ([[ ]]) and page number, bookmark, search, new page, more. */
 @Composable
-fun NotebookHeader(ui: ToolbarState, title: String, onBack: () -> Unit, onSearch: (String) -> Unit, onHit: (Int) -> Unit, onChange: () -> Unit) {
+fun NotebookHeader(ui: ToolbarState, title: String, onBack: () -> Unit, onSearch: (String) -> Unit, onHit: (Int) -> Unit, onChange: () -> Unit, onPaste: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
         Row(Modifier.fillMaxWidth().height(57.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton({ if (ui.searching) { ui.searching = false; onSearch("") } else onBack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, if (ui.searching) "Close search" else "Back", Modifier.size(26.dp)) }
@@ -103,6 +103,8 @@ fun NotebookHeader(ui: ToolbarState, title: String, onBack: () -> Unit, onSearch
             Box {
                 IconButton({ open = true }) { Icon(Icons.Filled.MoreVert, "More", Modifier.size(26.dp)) }
                 DropdownMenu(open, { open = false }) {
+                    DropdownMenuItem({ Text("Insert image…") }, { open = false; ui.pickingImage = true })
+                    DropdownMenuItem({ Text("Paste image") }, { open = false; onPaste() })
                     DropdownMenuItem({ Text("Pages and bookmarks") }, { open = false; ui.browsing = true })
                     DropdownMenuItem(
                         { Text(if (ui.mode == ScrollMode.PAGED) "Scroll continuously" else "Turn page by page") },
