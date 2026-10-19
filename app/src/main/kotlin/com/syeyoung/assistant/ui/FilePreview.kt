@@ -98,6 +98,8 @@ private const val TEXT_LIMIT = 1024 * 1024
 fun FilePreview(e: DriveEntry, fullScreen: Boolean, onClose: () -> Unit, onOpenWith: () -> Unit) {
     val context = LocalContext.current
     val kind = previewKind(e.name)
+    // Notes open to write in.
+    if (kind == PreviewKind.MARKDOWN) return com.syeyoung.assistant.notes.NoteEditorPane(e.path, fullScreen, onClose)
     // The file, fetched into the cache (kept per version, so reopening it is instant).
     var file by remember(e.path, e.modified) { mutableStateOf<File?>(null) }
     var failed by remember(e.path, e.modified) { mutableStateOf<String?>(null) }

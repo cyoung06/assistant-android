@@ -70,6 +70,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
     implementation("androidx.glance:glance-appwidget:1.2.0")
+    // Serving the bundled note editor to its WebView.
+    implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.glance:glance-material3:1.2.0")
     // Writing on PDFs: Jetpack Ink for the pen (low-latency), PdfBox to keep the writing in the PDF.
     implementation("androidx.ink:ink-authoring:1.0.0")

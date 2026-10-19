@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.foundation.indication
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
@@ -352,6 +353,14 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
             if (!locked) Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
                 androidx.compose.material3.FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New") }
                 androidx.compose.material3.DropdownMenu(creating, { creating = false }) {
+                    androidx.compose.material3.DropdownMenuItem({ Text("New note") }, {
+                        creating = false
+                        scope.launch {
+                            runCatching { newNote(repo, path) }
+                                .onSuccess { p -> FilesNav.changes++; selected = repo.api().driveFolder(path).propertyEntries.find { it.path == p } }
+                                .onFailure { Toast.makeText(context, "Couldn't make the note: ${it.message}", Toast.LENGTH_LONG).show() }
+                        }
+                    }, leadingIcon = { Icon(Icons.Filled.Description, null) })
                     androidx.compose.material3.DropdownMenuItem({ Text("New notebook") }, { creating = false; notebook = true }, leadingIcon = { Icon(Icons.Filled.EditNote, null) })
                     androidx.compose.material3.DropdownMenuItem({ Text("Upload files") }, { creating = false; upload.launch(arrayOf("*/*")) }, leadingIcon = { Icon(Icons.Filled.Upload, null) })
                     androidx.compose.material3.DropdownMenuItem({ Text("New folder") }, { creating = false; naming = true }, leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
@@ -796,6 +805,16 @@ private class LabelShadow(view: android.view.View, private val label: String) : 
         canvas.drawRoundRect(0f, 0f, w.toFloat(), h.toFloat(), h / 2f, h / 2f, back)
         canvas.drawText(shown, 14 * density, h / 2f + text.textSize / 3, text)
     }
+}
+
+/** Makes "Untitled.md" (numbered if taken) in [folder], starting with its title; its path. */
+private suspend fun newNote(repo: Repo, folder: String): String {
+    val taken = repo.api().driveFolder(folder).propertyEntries.map { it.name }.toSet()
+    var name = "Untitled.md"
+    var n = 2
+    while (name in taken) name = "Untitled (${n++}).md"
+    repo.api().driveWrite(folder + name, "# ${name.removeSuffix(".md")}\n\n".toByteArray(), "text/markdown; charset=utf-8")
+    return folder + name
 }
 
 /** Takes drops (drive entries, or files from other apps) into a folder; [locked] folders take none. */

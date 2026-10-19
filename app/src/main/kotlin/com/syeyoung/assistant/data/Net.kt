@@ -24,6 +24,7 @@ import io.ktor.client.request.forms.formData
 import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.prepareGet
@@ -138,6 +139,31 @@ class Api(endpoint: Endpoint) {
             to.outputStream().use { out -> r.bodyAsChannel().toInputStream().use { it.copyTo(out) } }
         }
     }
+
+    /** A small drive file (a note, an image it shows): its bytes, version and type. */
+    class DriveFile(val bytes: ByteArray, val etag: String?, val type: String?)
+
+    suspend fun driveRead(path: String): DriveFile =
+        http.prepareGet("$base/api/v1/drive/file?path=${drivePath(path)}").execute { r ->
+            if (!r.status.isSuccess()) throw ApiException(r.status.value, "HTTP ${r.status.value}")
+            DriveFile(r.bodyAsChannel().toInputStream().use { it.readBytes() }, etagOf(r), r.headers[HttpHeaders.ContentType])
+        }
+
+    /**
+     * Writes a small drive file; with [ifMatch] (the version it was read at) only if it's still that
+     * version: a 412 [ApiException] otherwise. The new version, if the drive says.
+     */
+    suspend fun driveWrite(path: String, bytes: ByteArray, type: String?, ifMatch: String? = null): String? {
+        val r = http.put("$base/api/v1/drive/file?path=${drivePath(path)}") {
+            if (ifMatch != null) header(HttpHeaders.IfMatch, ifMatch)
+            setBody(io.ktor.http.content.ByteArrayContent(bytes, type?.let { ContentType.parse(it) } ?: ContentType.Application.OctetStream))
+        }
+        if (!r.status.isSuccess()) throw ApiException(r.status.value, problem(r.bodyAsText()) ?: "HTTP ${r.status.value}")
+        return etagOf(r)
+    }
+
+    /** A response's ETag, as the drive gave it (a proxy compressing it on the way marks it weak). */
+    private fun etagOf(r: io.ktor.client.statement.HttpResponse) = r.headers[HttpHeaders.ETag]?.removePrefix("W/")
 
     /** A preview of a drive PDF's first page (JPEG); null if there's none. */
     suspend fun driveThumb(path: String, version: String?, width: Int): ByteArray? =

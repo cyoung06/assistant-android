@@ -73,6 +73,14 @@
             </intent-filter>
         </activity>
 
+        <!-- A note (Markdown in the drive) in the editor, outside Files. -->
+        <activity
+            android:name=".notes.NoteActivity"
+            android:exported="false"
+            android:label="Note"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
+
         <!-- The drive as a storage location ("Assistant" in every app's file picker). -->
         <provider
             android:name=".drive.DriveProvider"
