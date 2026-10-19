@@ -51,10 +51,12 @@ fun TaskList(
     onStatus: (TaskResponse, TaskResponse.Status) -> Unit,
     showProject: Boolean = true,
     empty: String = "Nothing here.",
+    header: (@Composable () -> Unit)? = null,
 ) {
     var showClosed by remember { mutableStateOf(false) }
     PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize()) {
+            header?.let { h -> item(key = "header") { h() } }
             if (groups.isEmpty() && closed.isEmpty()) item { Text(empty, Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             groups.forEach { g ->
                 item(key = "h:${g.key}") { GroupHeader(g.label, g.tasks.size, g.danger, g.color) }

@@ -5,6 +5,7 @@ import com.syeyoung.assistant.api.models.CreateTaskRequest
 import com.syeyoung.assistant.api.models.DueDto
 import com.syeyoung.assistant.api.models.EventOccurrence
 import com.syeyoung.assistant.api.models.InitiativeResponse
+import com.syeyoung.assistant.api.models.ProjectSchedule
 import com.syeyoung.assistant.api.models.LabelResponse
 import com.syeyoung.assistant.api.models.ProjectResponse
 import com.syeyoung.assistant.api.models.TaskResponse
@@ -123,6 +124,8 @@ class Repo private constructor(private val context: Context) {
     }
 
     suspend fun events(from: String, to: String): List<EventOccurrence> = api().calendar.occurrences(from, to).value()
+
+    suspend fun projectSchedule(id: UUID): ProjectSchedule = api().calendar.projectSchedule(id, 28).value()
 
     private fun applyLocally(t: TaskResponse, c: TaskChange): TaskResponse {
         var n = t

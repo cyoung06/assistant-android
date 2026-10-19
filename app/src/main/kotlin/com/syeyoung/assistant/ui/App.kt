@@ -153,6 +153,7 @@ fun AssistantApp(openTask: UUID? = null) {
                     is Screen.Project -> TaskList(
                         groupByDue(tasks.filter { it.projectId == s.id }, today), tasks.filter { it.projectId == s.id && it.closed },
                         state.data.projects, state.loading, { scope.launch { repo.refresh() } }, { detail = it.id }, onStatus, showProject = false,
+                        header = { ProjectScheduleHeader(s.id, s.title) },
                     )
                     Screen.Calendar -> CalendarScreen { detail = it }
                     Screen.Settings -> SettingsScreen()

@@ -1,6 +1,7 @@
 package com.syeyoung.assistant.data
 
 import com.syeyoung.assistant.api.models.EventOccurrence
+import com.syeyoung.assistant.api.models.RecurringSummary
 import com.syeyoung.assistant.api.models.TaskResponse
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -114,3 +115,14 @@ fun visibleDays(widthDp: Float): Int = when {
 /** The first day shown: the week's Sunday when showing a whole week, else [anchor] itself. */
 fun rangeStart(anchor: LocalDate, days: Int): LocalDate =
     if (days == 7) anchor.with(TemporalAdjusters.previousOrSame(DayOfWeek.SUNDAY)) else anchor
+
+/** A project's repeating event in one line: "Tue · Thu 12:30–13:45", "Every 2 weeks · Fri", "Daily 09:00–10:00". */
+fun scheduleLine(r: RecurringSummary): String {
+    val time = if (r.start != null && r.end != null) " ${r.start.take(5)}–${r.end.take(5)}" else ""
+    val days = r.weekdays.joinToString(" · ") { d -> d.value.take(3).lowercase().replaceFirstChar { it.uppercase() } }
+    return when (r.freq) {
+        RecurringSummary.Freq.weekly -> (if (r.interval > 1) "Every ${r.interval} weeks · " else "") + days + time
+        RecurringSummary.Freq.daily -> (if (r.interval > 1) "Every ${r.interval} days" else "Daily") + time
+        else -> (if (r.interval > 1) "Every ${r.interval} months" else "Monthly") + time
+    }
+}

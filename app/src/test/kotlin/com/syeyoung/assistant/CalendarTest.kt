@@ -2,12 +2,14 @@ package com.syeyoung.assistant
 
 import com.syeyoung.assistant.api.models.DueDto
 import com.syeyoung.assistant.api.models.EventOccurrence
+import com.syeyoung.assistant.api.models.RecurringSummary
 import com.syeyoung.assistant.api.models.TaskResponse
 import com.syeyoung.assistant.data.allDayOn
 import com.syeyoung.assistant.data.calItems
 import com.syeyoung.assistant.data.dayLayout
 import com.syeyoung.assistant.data.monthGrid
 import com.syeyoung.assistant.data.rangeStart
+import com.syeyoung.assistant.data.scheduleLine
 import com.syeyoung.assistant.data.visibleDays
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -61,5 +63,12 @@ class CalendarTest {
         val grid = monthGrid(YearMonth.of(2026, 10))
         assertEquals(LocalDate.parse("2026-09-27"), grid.first())
         assertEquals(42, grid.size)
+    }
+
+    @Test fun scheduleLineSumsUpARepeatingEvent() {
+        val r = RecurringSummary(eventId = "e", freq = RecurringSummary.Freq.weekly, interval = 1, title = "확률및통계",
+            weekdays = listOf(RecurringSummary.Weekdays.TUESDAY, RecurringSummary.Weekdays.THURSDAY), start = "12:30:00", end = "13:45:00")
+        assertEquals("Tue · Thu 12:30–13:45", scheduleLine(r))
+        assertEquals("Every 2 weeks · Tue · Thu", scheduleLine(r.copy(interval = 2, start = null, end = null)))
     }
 }
