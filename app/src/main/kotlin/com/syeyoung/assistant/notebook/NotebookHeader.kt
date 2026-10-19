@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -61,7 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** The bar across the top, as in Noteshelf: back, the title, the page (tap for quick pages), bookmark, search, new page, more. */
+/** The bar across the top, as in Noteshelf: back, the title, the page sidebar ([[ ]]) and page number, bookmark, search, new page, more. */
 @Composable
 fun NotebookHeader(ui: ToolbarState, title: String, onBack: () -> Unit, onSearch: (String) -> Unit, onHit: (Int) -> Unit, onChange: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
@@ -85,6 +86,7 @@ fun NotebookHeader(ui: ToolbarState, title: String, onBack: () -> Unit, onSearch
             }
             Text(title.removeSuffix(".pdf"), Modifier.weight(1f), fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (ui.status.isNotEmpty()) Text(ui.status, Modifier.padding(horizontal = 8.dp), fontSize = 14.sp, color = MaterialTheme.colorScheme.outline)
+            IconButton({ ui.quickPages = !ui.quickPages }) { PagesGlyph(if (ui.quickPages) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) }
             Text(
                 if (ui.pages == 0) "…" else "${ui.page + 1} / ${ui.pages}",
                 Modifier.clickable { ui.quickPages = !ui.quickPages }.padding(horizontal = 13.dp, vertical = 10.dp),
@@ -204,39 +206,60 @@ fun StylePicker(selected: PageStyle, onPick: (PageStyle) -> Unit) {
     }
 }
 
-/** Noteshelf-style quick pages: a strip of thumbnails along the bottom; tap one to go there. */
+/**
+ * The page sidebar (Noteshelf-style quick pages): a column of thumbnails down the right side that
+ * scrolls on its own; tap one to go there. It follows the page on screen, and stays open while
+ * writing.
+ */
 @Composable
-fun QuickPages(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, onGo: (Int) -> Unit, onAll: () -> Unit) {
+fun PageSidebar(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, onGo: (Int) -> Unit, onAll: () -> Unit) {
     val list = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(Unit) { list.scrollToItem((ui.page - 2).coerceAtLeast(0)) }
-    Surface(Modifier.fillMaxWidth().height(176.dp), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 8.dp) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            androidx.compose.foundation.lazy.LazyRow(
+    LaunchedEffect(Unit) { list.scrollToItem((ui.page - 1).coerceAtLeast(0)) }
+    // Keep the page on screen in view as it changes.
+    LaunchedEffect(ui.page) {
+        val visible = list.layoutInfo.visibleItemsInfo.map { it.index }
+        if (ui.page !in visible) list.animateScrollToItem((ui.page - 1).coerceAtLeast(0))
+    }
+    Surface(Modifier.width(150.dp).fillMaxHeight(), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 8.dp) {
+        Column {
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${ui.pages} pages", Modifier.weight(1f), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                IconButton({ ui.quickPages = false }) { Icon(Icons.Filled.Close, "Close", Modifier.size(20.dp)) }
+            }
+            androidx.compose.foundation.lazy.LazyColumn(
                 Modifier.weight(1f), state = list,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 18.dp, end = 18.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(count = ui.pages, key = { it }) { i ->
                     var bmp by remember(i) { mutableStateOf<Bitmap?>(null) }
                     LaunchedEffect(i) { bmp = thumbnail(i) }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onGo(i) }) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth().clickable { onGo(i) }) {
                         Box(
-                            Modifier.height(128.dp).aspectRatio(bmp?.let { it.width.toFloat() / it.height } ?: 0.707f).background(Color.White)
+                            Modifier.fillMaxWidth().aspectRatio(bmp?.let { it.width.toFloat() / it.height } ?: 0.707f).background(Color.White)
                                 .border(if (i == ui.page) 3.dp else 1.dp, if (i == ui.page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
                         ) {
                             bmp?.let { Image(it.asImageBitmap(), "Page ${i + 1}", Modifier.fillMaxSize()) }
-                            if (i in ui.bookmarks) Icon(Icons.Filled.Star, "Bookmarked", Modifier.align(Alignment.TopEnd).padding(2.dp).size(18.dp), tint = Color(0xFFF2B600))
+                            if (i in ui.bookmarks) Icon(Icons.Filled.Star, "Bookmarked", Modifier.align(Alignment.TopEnd).padding(2.dp).size(16.dp), tint = Color(0xFFF2B600))
                         }
-                        Text("${i + 1}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${i + 1}", fontSize = 12.sp, color = if (i == ui.page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
-            Column(Modifier.padding(horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                androidx.compose.material3.TextButton(onAll) { Text("All pages") }
-                androidx.compose.material3.TextButton({ ui.quickPages = false }) { Text("Close") }
-            }
+            androidx.compose.material3.TextButton(onAll, Modifier.fillMaxWidth()) { Text("All pages") }
         }
+    }
+}
+
+/** Two pages side by side: the page sidebar's button. */
+@Composable
+private fun PagesGlyph(tint: Color) {
+    androidx.compose.foundation.Canvas(Modifier.size(24.dp)) {
+        val w = size.width
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(w * 0.08f)
+        val corner = androidx.compose.ui.geometry.CornerRadius(w * 0.06f)
+        drawRoundRect(tint, androidx.compose.ui.geometry.Offset(w * 0.08f, w * 0.16f), androidx.compose.ui.geometry.Size(w * 0.38f, w * 0.68f), corner, style = stroke)
+        drawRoundRect(tint, androidx.compose.ui.geometry.Offset(w * 0.54f, w * 0.16f), androidx.compose.ui.geometry.Size(w * 0.38f, w * 0.68f), corner, style = stroke)
     }
 }
 

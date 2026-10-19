@@ -88,8 +88,8 @@ class NotebookActivity : ComponentActivity() {
                             AndroidView({ stack }, Modifier.fillMaxSize())
                             NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo)
                             if (ui.searching) Box(Modifier.align(Alignment.TopEnd).padding(end = 8.dp)) { SearchResults(ui, ::showHit) }
-                            if (ui.quickPages) Box(Modifier.align(Alignment.BottomCenter)) {
-                                QuickPages(ui, ::thumbnail, onGo = { view.goTo(it) }, onAll = { ui.quickPages = false; ui.browsing = true })
+                            if (ui.quickPages) Box(Modifier.align(Alignment.CenterEnd)) {
+                                PageSidebar(ui, ::thumbnail, onGo = { view.goTo(it) }, onAll = { ui.quickPages = false; ui.browsing = true })
                             }
                         }
                     }
