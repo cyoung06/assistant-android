@@ -16,6 +16,9 @@ class AssistantApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Jetpack PDF parses documents in an isolated process (no files, no network), which also runs
+        // this class: starting the app there kills that process and the PDF never loads.
+        if (android.os.Process.isIsolated()) return
         Crashes.install(this)
         // Every successful sync (in the app or in the background) reschedules reminders and redraws the widget.
         Repo.get(this).onRefreshed = { data ->
