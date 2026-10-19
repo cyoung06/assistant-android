@@ -161,26 +161,38 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         if (animate) animateTo(x, y) else { scrollXf = x; scrollYf = y; clampScroll(); afterMove() }
     }
 
-    private fun clampScroll() {
+    /**
+     * How far the screen can scroll: to just past the page edges (a gap's width), never into the
+     * empty space beside a page; along an axis where the zoomed page fits on screen, it stays centred.
+     */
+    private fun scrollRange(): RectF {
         val w = width.toFloat()
         val h = height.toFloat()
-        when (mode) {
-            ScrollMode.CONTINUOUS -> {
-                scrollXf = scrollXf.coerceIn(0f, max(0f, contentW * zoom - w))
-                scrollYf = scrollYf.coerceIn(0f, max(0f, contentH * zoom - h))
+        fun axis(from: Float, to: Float, view: Float, pad: Float): Pair<Float, Float> {
+            val lo = from * zoom - pad
+            val hi = to * zoom + pad - view
+            return if (hi >= lo) lo to hi else ((from + to) / 2 * zoom - view / 2).let { it to it }
+        }
+        return when {
+            rects.isEmpty() -> RectF()
+            mode == ScrollMode.PAGED && zoom <= 1.01f -> RectF(0f, 0f, max(0f, contentW - w), 0f)
+            mode == ScrollMode.PAGED -> {
+                val r = rects[currentPage]
+                val (x0, x1) = axis(r.left, r.right, w, gap)
+                val (y0, y1) = axis(r.top, r.bottom, h, gap)
+                RectF(x0, y0, x1, y1)
             }
-            ScrollMode.PAGED -> {
-                if (zoom > 1.01f) {
-                    // Zoomed in: stay within the current page's screen.
-                    val left = currentPage * w * zoom
-                    scrollXf = scrollXf.coerceIn(left, left + w * zoom - w)
-                    scrollYf = scrollYf.coerceIn(0f, h * zoom - h)
-                } else {
-                    scrollXf = scrollXf.coerceIn(0f, max(0f, contentW - w))
-                    scrollYf = 0f
-                }
+            else -> {
+                val (x0, x1) = axis(rects.minOf { it.left }, rects.maxOf { it.right }, w, gap)
+                RectF(x0, 0f, x1, max(0f, contentH * zoom - h))
             }
         }
+    }
+
+    private fun clampScroll() {
+        val r = scrollRange()
+        scrollXf = scrollXf.coerceIn(r.left, r.right)
+        scrollYf = scrollYf.coerceIn(r.top, r.bottom)
     }
 
     private fun afterMove() {
@@ -462,10 +474,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     }
 
     private data class Bounds(val minX: Int, val maxX: Int, val minY: Int, val maxY: Int)
-    private fun scrollBounds(): Bounds = when (mode) {
-        ScrollMode.CONTINUOUS -> Bounds(0, max(0f, contentW * zoom - width).toInt(), 0, max(0f, contentH * zoom - height).toInt())
-        ScrollMode.PAGED -> { val left = currentPage * width * zoom; Bounds(left.toInt(), (left + width * zoom - width).toInt(), 0, (height * zoom - height).toInt()) }
-    }
+    private fun scrollBounds(): Bounds = scrollRange().let { Bounds(it.left.toInt(), it.right.toInt(), it.top.toInt(), it.bottom.toInt()) }
 
     override fun computeScroll() {
         if (scroller.computeScrollOffset()) {
