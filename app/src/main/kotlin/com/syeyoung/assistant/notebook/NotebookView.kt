@@ -428,7 +428,10 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             clampScroll(); afterMove()
             return true
         }
-    })
+    }).apply {
+        // Double-tap-and-drag zoom: quick successive flicks set it off, and the page jumped mid-scroll.
+        isQuickScaleEnabled = false
+    }
 
     /*
      * Page by page works the same at every zoom: the page follows the finger 1:1 both ways. Past
