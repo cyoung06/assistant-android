@@ -3,6 +3,7 @@ package com.syeyoung.assistant.data
 import android.content.Context
 import com.syeyoung.assistant.api.models.CreateTaskRequest
 import com.syeyoung.assistant.api.models.DueDto
+import com.syeyoung.assistant.api.models.CreateInitiativeRequest
 import com.syeyoung.assistant.api.models.EventOccurrence
 import com.syeyoung.assistant.api.models.InitiativeResponse
 import com.syeyoung.assistant.api.models.ProjectSchedule
@@ -54,6 +55,15 @@ data class TaskChange(
 )
 
 data class Optional<T>(val value: T?)
+
+/** A change to an initiative: null fields are left alone; [targetDate] holds null to clear it; [projectIds] replaces the list. */
+data class InitiativeChange(
+    val name: String? = null,
+    val description: String? = null,
+    val status: InitiativeResponse.Status? = null,
+    val targetDate: Optional<java.time.LocalDate>? = null,
+    val projectIds: List<UUID>? = null,
+)
 
 /** The app's data: one per process. */
 class Repo private constructor(private val context: Context) {
@@ -127,6 +137,45 @@ class Repo private constructor(private val context: Context) {
     }
 
     suspend fun events(from: String, to: String): List<EventOccurrence> = api().calendar.occurrences(from, to).value()
+
+    // ---- Initiatives ------------------------------------------------------------------
+
+    suspend fun createInitiative(name: String): InitiativeResponse = api().tasks.createInitiative(CreateInitiativeRequest(name = name)).value().also { refresh() }
+
+    /** Shows a change to an initiative at once (name, status, target, projects), then sends it as a merge patch. */
+    suspend fun changeInitiative(id: UUID, c: InitiativeChange) {
+        _state.update { s ->
+            s.copy(data = s.data.copy(initiatives = s.data.initiatives.map { i ->
+                if (i.id != id) i else i.copy(
+                    name = c.name ?: i.name,
+                    description = c.description ?: i.description,
+                    status = c.status ?: i.status,
+                    targetDate = c.targetDate?.let { it.value?.toString() } ?: i.targetDate,
+                    projectIds = c.projectIds ?: i.projectIds,
+                )
+            }))
+        }
+        val patch = buildJsonObject {
+            c.name?.let { put("name", JsonPrimitive(it)) }
+            c.description?.let { put("description", JsonPrimitive(it)) }
+            c.status?.let { put("status", JsonPrimitive(it.value)) }
+            c.targetDate?.let { put("targetDate", it.value?.let { d -> JsonPrimitive(d.toString()) } ?: JsonNull) }
+            c.projectIds?.let { ids -> put("projectIds", buildJsonArray { ids.forEach { add(JsonPrimitive(it.toString())) } }) }
+        }
+        try {
+            api().patchInitiative(id, patch)
+        } finally {
+            refresh()
+        }
+    }
+
+    suspend fun deleteInitiative(id: UUID) {
+        try {
+            api().tasks.deleteInitiative(id).let { if (!it.success) throw ApiException(it.status, "Couldn't delete") }
+        } finally {
+            refresh()
+        }
+    }
 
     suspend fun event(id: String) = api().event(id)
 

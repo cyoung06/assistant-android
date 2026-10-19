@@ -122,6 +122,12 @@ fun refParts(markdown: String): List<Part> {
 fun refMarkdown(title: String, url: String) = "[" + title.replace(Regex("""([\[\]])"""), """\\$1""") + "](" + url.replace(")", "%29").replace(" ", "%20") + ")"
 
 /** Open projects for the drawer: those in an active initiative, or in none (a finished semester's courses drop out). */
+/** Active first, then planned, then completed; by name within each. */
+fun sortInitiatives(list: List<InitiativeResponse>): List<InitiativeResponse> {
+    val order = listOf(InitiativeResponse.Status.active, InitiativeResponse.Status.planned, InitiativeResponse.Status.completed)
+    return list.sortedWith(compareBy({ order.indexOf(it.status).let { i -> if (i < 0) order.size else i } }, { it.name.lowercase() }))
+}
+
 fun drawerProjects(data: Snapshot): List<ProjectResponse> {
     val active = data.initiatives.filter { it.status == InitiativeResponse.Status.active }.map { it.id }.toSet()
     return data.projects.filter { p ->

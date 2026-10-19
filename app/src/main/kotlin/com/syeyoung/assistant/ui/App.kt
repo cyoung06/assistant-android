@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircleOutline
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoveToInbox
@@ -66,6 +67,8 @@ sealed interface Screen {
     data object All : Screen { override val title = "All tasks" }
     data class Project(val id: UUID, override val title: String) : Screen
     data object Calendar : Screen { override val title = "Calendar" }
+    data object Initiatives : Screen { override val title = "Initiatives" }
+    data class Initiative(val id: UUID, override val title: String) : Screen
     data object Settings : Screen { override val title = "Settings" }
 }
 
@@ -142,6 +145,11 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             Text("Projects", Modifier.padding(horizontal = 28.dp, vertical = 4.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            NavigationDrawerItem(
+                label = { Text("Initiatives") }, icon = { Icon(Icons.Filled.Flag, null) },
+                selected = screen == Screen.Initiatives || screen is Screen.Initiative, onClick = { screen = Screen.Initiatives; scope.launch { drawer.close() } },
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
             drawerProjects(state.data).forEach { p ->
                 val open = state.data.tasks.count { it.projectId == p.id && !it.closed }
                 NavigationDrawerItem(
@@ -166,7 +174,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
             },
             floatingActionButton = {
                 when (screen) {
-                    Screen.Settings -> {}
+                    Screen.Settings, Screen.Initiatives, is Screen.Initiative -> {}
                     Screen.Calendar -> FloatingActionButton({ event = EventTarget.New(calendarDay) }) { Icon(Icons.Filled.Add, "New event") }
                     else -> FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New task") }
                 }
@@ -192,11 +200,21 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                     is Screen.Project -> TaskList(
                         groupByDue(tasks.filter { it.projectId == s.id }, today), tasks.filter { it.projectId == s.id && it.closed },
                         state.data.projects, state.loading, { scope.launch { repo.refresh() } }, { detail = it.id }, onStatus, showProject = false,
-                        header = { ProjectScheduleHeader(s.id, s.title) },
+                        header = {
+                            Column {
+                                InitiativeChips(s.id) { screen = Screen.Initiative(it.id, it.name) }
+                                ProjectScheduleHeader(s.id, s.title)
+                            }
+                        },
                     )
                     Screen.Calendar -> CalendarScreen(calendarVersion, onOpenTask = { detail = it }, onOpenEvent = { event = it }, onDay = { calendarDay = it })
                     Screen.Triage -> TriageScreen(onOpenTask = { detail = it }, onOpenMail = { mail = it })
                     Screen.Settings -> SettingsScreen()
+                    Screen.Initiatives -> InitiativesScreen { screen = Screen.Initiative(it.id, it.name) }
+                    is Screen.Initiative -> {
+                        BackHandler { screen = Screen.Initiatives }
+                        InitiativeDetail(s.id, onOpenProject = { id, name -> screen = Screen.Project(id, name) }, onDeleted = { screen = Screen.Initiatives })
+                    }
                 }
             }
         }

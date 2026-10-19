@@ -92,6 +92,10 @@ class Api(endpoint: Endpoint) {
         http.patch(eventUrl(id)) { contentType(ContentType.Application.Json); setBody(patch) }
     }.let { }
 
+    suspend fun patchInitiative(id: UUID, patch: JsonObject) = send {
+        http.patch("$base/api/v1/initiatives/$id") { contentType(ContentType.Application.Json); setBody(patch) }
+    }.let { }
+
     suspend fun event(id: String): EventResponse = send { http.get(eventUrl(id)) }.body()
 
     suspend fun postEvent(body: JsonObject) = send {
