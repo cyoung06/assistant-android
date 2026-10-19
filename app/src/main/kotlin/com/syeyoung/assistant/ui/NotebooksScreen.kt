@@ -52,21 +52,56 @@ fun NotebooksScreen() {
     LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { recent = Notebooks.recent(context) } }
 
     val openPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { Notebooks.open(context, it) } }
-    // A new notebook asks for its page style first, then where to save it.
+    // A new notebook: its name, page style, and the project it belongs to (or none); it's made in
+    // that project's folder in the drive and opens there.
     var choosing by remember { mutableStateOf(false) }
     var style by remember { mutableStateOf(PageStyle.DOTS) }
-    val newNotebook = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
-        if (uri != null) scope.launch {
-            withContext(Dispatchers.IO) { Notebooks.writeBlank(context, uri, style) }
-            Notebooks.open(context, uri)
-        }
-    }
+    var project by remember { mutableStateOf<java.util.UUID?>(null) }
+    var name by remember { mutableStateOf("") }
+    val repo = com.syeyoung.assistant.data.Repo.get(context)
+    val state by repo.state.collectAsStateCompat()
     if (choosing) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { choosing = false },
             title = { Text("New notebook") },
-            text = { StylePicker(style) { style = it } },
-            confirmButton = { androidx.compose.material3.TextButton({ choosing = false; newNotebook.launch("Notebook.pdf") }) { Text("Choose where to save") } },
+            text = {
+                androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    androidx.compose.material3.OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, placeholder = { Text("Notebook") })
+                    StylePicker(style) { style = it }
+                    Text("In", style = MaterialTheme.typography.labelLarge)
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        androidx.compose.material3.FilterChip(project == null, { project = null }, { Text("No project") })
+                        com.syeyoung.assistant.data.drawerProjects(state.data).forEach { p ->
+                            androidx.compose.material3.FilterChip(project == p.id, { project = p.id }, { Text(p.name) }, leadingIcon = { Dot(p.color) })
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton({
+                    choosing = false
+                    val title = name.trim().replace('/', ' ').ifBlank { "Notebook" }
+                    scope.launch {
+                        runCatching {
+                            val folder = project?.let { id -> repo.api().drive.projectFolder(id, "").let { r -> if (r.success) r.body().path else error("HTTP ${r.status}") } }
+                                ?: "Projects/${com.syeyoung.assistant.drive.DriveProvider.NO_PROJECT}/"
+                            val existing = repo.api().driveFolder(folder).propertyEntries.map { it.name }.toSet()
+                            var file = "$title.pdf"
+                            var n = 2
+                            while (file in existing) file = "$title ($n).pdf".also { n++ }
+                            val tmp = java.io.File.createTempFile("notebook", ".pdf", context.cacheDir)
+                            try {
+                                tmp.writeBytes(com.syeyoung.assistant.notebook.BlankPdf.notebook(20, style))
+                                repo.api().driveUpload(folder + file, tmp, "application/pdf")
+                            } finally {
+                                tmp.delete()
+                            }
+                            folder + file
+                        }.onSuccess { path -> name = ""; Notebooks.open(context, com.syeyoung.assistant.drive.DriveProvider.uri(context, path)) }
+                            .onFailure { android.widget.Toast.makeText(context, "Couldn't make the notebook: ${it.message}", android.widget.Toast.LENGTH_LONG).show() }
+                    }
+                }) { Text("Create") }
+            },
             dismissButton = { androidx.compose.material3.TextButton({ choosing = false }) { Text("Cancel") } },
         )
     }

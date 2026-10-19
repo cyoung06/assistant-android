@@ -26,6 +26,11 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
+import io.ktor.client.request.prepareGet
+import io.ktor.client.request.put
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.jvm.javaio.toByteReadChannel
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.Headers
@@ -79,6 +84,7 @@ class Api(endpoint: Endpoint) {
     val refs = RefControllerApi(base, engine, config)
     val mail = MailControllerApi(base, engine, config)
     val triage = TriageControllerApi(base, engine, config)
+    val drive = com.syeyoung.assistant.api.apis.DriveControllerApi(base, engine, config)
     private val http = HttpClient(engine, config)
 
     suspend fun patchTask(id: UUID, patch: JsonObject) = send {
@@ -115,6 +121,36 @@ class Api(endpoint: Endpoint) {
             },
         )
     }.body()
+
+    // ---- the drive (paths from its root; folders end with "/") ----
+
+    private fun drivePath(p: String) = java.net.URLEncoder.encode(p, Charsets.UTF_8).replace("+", "%20")
+
+    suspend fun driveFolder(path: String): com.syeyoung.assistant.api.models.DriveFolder = drive.folder(path).value()
+
+    /** Copies a drive file into [to]. */
+    suspend fun driveDownload(path: String, to: java.io.File) {
+        http.prepareGet("$base/api/v1/drive/file?path=${drivePath(path)}").execute { r ->
+            if (!r.status.isSuccess()) throw ApiException(r.status.value, "HTTP ${r.status.value}")
+            to.outputStream().use { out -> r.bodyAsChannel().toInputStream().use { it.copyTo(out) } }
+        }
+    }
+
+    /** Writes [from] to a drive file (its folder is made if needed). */
+    suspend fun driveUpload(path: String, from: java.io.File, type: String?) = send {
+        http.put("$base/api/v1/drive/file?path=${drivePath(path)}") {
+            // Streamed from the file, not read into memory (scans and videos can be large).
+            setBody(object : io.ktor.http.content.OutgoingContent.ReadChannelContent() {
+                override val contentLength = from.length()
+                override val contentType = type?.let { ContentType.parse(it) } ?: ContentType.Application.OctetStream
+                override fun readFrom() = from.inputStream().toByteReadChannel()
+            })
+        }
+    }.let { }
+
+    suspend fun driveMakeFolder(path: String) = send { http.post("$base/api/v1/drive/folder?path=${drivePath(path)}") }.let { }
+    suspend fun driveMove(from: String, to: String) = send { http.post("$base/api/v1/drive/move?from=${drivePath(from)}&to=${drivePath(to)}") }.let { }
+    suspend fun driveDelete(path: String) = send { http.delete("$base/api/v1/drive/file?path=${drivePath(path)}") }.let { }
 
     suspend fun download(id: UUID): ByteArray = send { http.get("$base/api/v1/attachments/$id") }.body()
 

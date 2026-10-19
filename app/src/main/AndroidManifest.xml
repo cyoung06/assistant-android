@@ -73,6 +73,18 @@
             </intent-filter>
         </activity>
 
+        <!-- The drive as a storage location ("Assistant" in every app's file picker). -->
+        <provider
+            android:name=".drive.DriveProvider"
+            android:authorities="${applicationId}.drive"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

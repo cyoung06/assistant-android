@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoveToInbox
@@ -73,6 +74,7 @@ sealed interface Screen {
     data object Calendar : Screen { override val title = "Calendar" }
     data object Initiatives : Screen { override val title = "Initiatives" }
     data object Notebooks : Screen { override val title = "Notebooks" }
+    data object Files : Screen { override val title = "Files" }
     data class Initiative(val id: UUID, override val title: String) : Screen
     data object Settings : Screen { override val title = "Settings" }
 }
@@ -168,6 +170,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                 )
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            NavigationDrawerItem(label = { Text("Files") }, icon = { Icon(Icons.Filled.Folder, null) }, selected = screen == Screen.Files, onClick = { screen = Screen.Files; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
             NavigationDrawerItem(label = { Text("Notebooks") }, icon = { Icon(Icons.Filled.Draw, null) }, selected = screen == Screen.Notebooks, onClick = { screen = Screen.Notebooks; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
             NavigationDrawerItem(label = { Text("Calendar") }, icon = { Icon(Icons.Filled.CalendarMonth, null) }, selected = screen == Screen.Calendar, onClick = { screen = Screen.Calendar; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
             NavigationDrawerItem(label = { Text("Settings") }, icon = { Icon(Icons.Filled.Settings, null) }, selected = screen == Screen.Settings, onClick = { screen = Screen.Settings; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
@@ -186,7 +189,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
             },
             floatingActionButton = {
                 when (screen) {
-                    Screen.Settings, Screen.Initiatives, is Screen.Initiative, Screen.Notebooks -> {}
+                    Screen.Settings, Screen.Initiatives, is Screen.Initiative, Screen.Notebooks, Screen.Files -> {}
                     Screen.Calendar -> FloatingActionButton({ event = EventTarget.New(calendarDay) }) { Icon(Icons.Filled.Add, "New event") }
                     else -> FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New task") }
                 }
@@ -209,7 +212,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                         groupByDue(tasks, today), tasks.filter { it.closed }.sortedByDescending { it.closedAt },
                         state.data.projects, state.loading, { scope.launch { repo.refresh() } }, { detail = it.id }, onStatus, empty = state.error ?: "No tasks.",
                     )
-                    is Screen.Project -> TaskList(
+                    is Screen.Project -> ProjectTabs(s.id, s.title) { TaskList(
                         groupByDue(tasks.filter { it.projectId == s.id }, today), tasks.filter { it.projectId == s.id && it.closed },
                         state.data.projects, state.loading, { scope.launch { repo.refresh() } }, { detail = it.id }, onStatus, showProject = false,
                         header = {
@@ -218,11 +221,12 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                                 ProjectScheduleHeader(s.id, s.title)
                             }
                         },
-                    )
+                    ) }
                     Screen.Calendar -> CalendarScreen(calendarVersion, onOpenTask = { detail = it }, onOpenEvent = { event = it }, onDay = { calendarDay = it })
                     Screen.Triage -> TriageScreen(onOpenTask = { detail = it }, onOpenMail = { mail = it })
                     Screen.Settings -> SettingsScreen()
                     Screen.Notebooks -> NotebooksScreen()
+                    Screen.Files -> FilesScreen()
                     Screen.Initiatives -> InitiativesScreen { screen = Screen.Initiative(it.id, it.name) }
                     is Screen.Initiative -> {
                         BackHandler { screen = Screen.Initiatives }
@@ -242,4 +246,17 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     else ModalNavigationDrawer(drawerContent = { ModalDrawerSheet { nav() } }, drawerState = drawer) { content() }
 
     if (creating) CreateTaskSheet((screen as? Screen.Project)?.id) { creating = false }
+}
+
+/** A project's page: its tasks, or its files (the project's own storage). */
+@Composable
+private fun ProjectTabs(id: UUID, name: String, tasks: @Composable () -> Unit) {
+    var files by remember(id) { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize()) {
+        androidx.compose.material3.SecondaryTabRow(if (files) 1 else 0) {
+            androidx.compose.material3.Tab(!files, { files = false }, text = { Text("Tasks") })
+            androidx.compose.material3.Tab(files, { files = true }, text = { Text("Files") })
+        }
+        Box(Modifier.weight(1f)) { if (files) ProjectFiles(id, name) else tasks() }
+    }
 }
