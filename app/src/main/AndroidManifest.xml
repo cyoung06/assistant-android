@@ -23,6 +23,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- References: mail (mid:, RFC 2392) shows in the app's reader; plms: opens PLMS. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="mid" />
+                <data android:scheme="plms" />
+            </intent-filter>
         </activity>
 
         <!-- Share to Assistant: text, links and images (screenshots), one or several. -->

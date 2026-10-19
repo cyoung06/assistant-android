@@ -7,6 +7,9 @@ import com.syeyoung.assistant.api.models.ProjectResponse
 import com.syeyoung.assistant.data.Bucket
 import com.syeyoung.assistant.data.Snapshot
 import com.syeyoung.assistant.data.drawerProjects
+import com.syeyoung.assistant.data.messageIdOf
+import com.syeyoung.assistant.data.plmsWebUrl
+import com.syeyoung.assistant.data.taskOf
 import com.syeyoung.assistant.data.bucket
 import com.syeyoung.assistant.data.dueChoices
 import com.syeyoung.assistant.data.dueText
@@ -84,5 +87,14 @@ class TasksTest {
             initiatives = listOf(initiative(fall, InitiativeResponse.Status.active), initiative(spring, InitiativeResponse.Status.completed)),
         )
         assertEquals(listOf("now", "loose", "both"), drawerProjects(data).map { it.name })
+    }
+
+    @Test fun linksPointToTheRightThing() {
+        val id = UUID.fromString("0b3b0b3b-0000-4000-8000-000000000001")
+        assertEquals(id, taskOf("https://assistant.example/task/$id"))
+        assertEquals(id, taskOf("https://assistant.example/#task/$id"))
+        assertEquals("lab@postech.ac.kr", messageIdOf("mid:lab@postech.ac.kr"))
+        assertEquals("https://plms.postech.ac.kr/mod/ubboard/article.php?id=55&bwid=9", plmsWebUrl("plms:post/55/9"))
+        assertEquals(null, taskOf("mid:x@y"))
     }
 }

@@ -34,6 +34,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.syeyoung.assistant.api.models.Ref
 import com.syeyoung.assistant.data.Repo
+import com.syeyoung.assistant.data.plmsWebUrl
+import com.syeyoung.assistant.data.taskOf
 import com.syeyoung.assistant.data.refMarkdown
 import com.syeyoung.assistant.data.refParts
 import com.syeyoung.assistant.data.value
@@ -41,11 +43,11 @@ import kotlinx.coroutines.delay
 
 /** What a reference link points to, as a small marker before its title. */
 fun refMarker(url: String): String = when {
-    "#task/" in url -> "◯"
-    "#tasks/project/" in url -> "▤"
-    "#event/" in url -> "▦"
-    "#mail/" in url -> "✉"
-    "plms.postech.ac.kr" in url -> "▣"
+    url.startsWith("mid:") || "#mail/" in url -> "✉"
+    url.startsWith("plms:") || "plms.postech.ac.kr" in url -> "▣"
+    "/tasks/project/" in url || "#tasks/project/" in url -> "▤"
+    "/task/" in url || "#task/" in url -> "◯"
+    "/event/" in url || "#event/" in url -> "▦"
     else -> "↗"
 }
 
@@ -68,10 +70,15 @@ fun RefText(markdown: String, style: TextStyle = MaterialTheme.typography.bodyMe
     Text(text, style = style)
 }
 
+/** Tasks open here ([onTask]); mail in the app's reader; PLMS on its site; everything else in the browser. */
 fun openRef(context: Context, url: String, onTask: (String) -> Unit) {
-    val task = Regex("""#task/([0-9a-f-]{36})""").find(url)
-    if (task != null) return onTask(task.groupValues[1])
-    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    taskOf(url)?.let { return onTask(it.toString()) }
+    val intent = when {
+        // The app handles mid: itself (MainActivity shows the mail).
+        url.startsWith("mid:") -> Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(context.packageName)
+        else -> Intent(Intent.ACTION_VIEW, Uri.parse(plmsWebUrl(url) ?: url))
+    }
+    context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
 /** `@` and up to two more words before the cursor, at the start or after a space. */

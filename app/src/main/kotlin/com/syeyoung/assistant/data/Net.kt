@@ -3,6 +3,7 @@ package com.syeyoung.assistant.data
 import android.content.Context
 import com.syeyoung.assistant.api.apis.CalendarControllerApi
 import com.syeyoung.assistant.api.apis.CaptureControllerApi
+import com.syeyoung.assistant.api.apis.MailControllerApi
 import com.syeyoung.assistant.api.apis.RefControllerApi
 import com.syeyoung.assistant.api.apis.TaskControllerApi
 import com.syeyoung.assistant.api.models.AnalyzeRequest
@@ -72,6 +73,7 @@ class Api(endpoint: Endpoint) {
     val calendar = CalendarControllerApi(base, engine, config)
     val capture = CaptureControllerApi(base, engine, config)
     val refs = RefControllerApi(base, engine, config)
+    val mail = MailControllerApi(base, engine, config)
     private val http = HttpClient(engine, config)
 
     suspend fun patchTask(id: UUID, patch: JsonObject) = send {

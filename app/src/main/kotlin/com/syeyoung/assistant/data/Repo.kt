@@ -7,6 +7,7 @@ import com.syeyoung.assistant.api.models.EventOccurrence
 import com.syeyoung.assistant.api.models.InitiativeResponse
 import com.syeyoung.assistant.api.models.ProjectSchedule
 import com.syeyoung.assistant.api.models.LabelResponse
+import com.syeyoung.assistant.api.models.MailMessage
 import com.syeyoung.assistant.api.models.ProjectResponse
 import com.syeyoung.assistant.api.models.TaskResponse
 import kotlinx.coroutines.async
@@ -126,6 +127,8 @@ class Repo private constructor(private val context: Context) {
     suspend fun events(from: String, to: String): List<EventOccurrence> = api().calendar.occurrences(from, to).value()
 
     suspend fun projectSchedule(id: UUID): ProjectSchedule = api().calendar.projectSchedule(id, 28).value()
+
+    suspend fun mailMessage(messageId: String): MailMessage = api().mail.mailMessage(messageId).value()
 
     private fun applyLocally(t: TaskResponse, c: TaskChange): TaskResponse {
         var n = t

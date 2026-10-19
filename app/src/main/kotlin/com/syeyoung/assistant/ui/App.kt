@@ -69,7 +69,7 @@ sealed interface Screen {
 /** The app: a drawer (always open on a tablet) with the task views, projects, calendar and settings. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AssistantApp(openTask: UUID? = null) {
+fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed: () -> Unit = {}) {
     val context = LocalContext.current
     val repo = Repo.get(context)
     val state by repo.state.collectAsStateCompat()
@@ -93,6 +93,12 @@ fun AssistantApp(openTask: UUID? = null) {
                 }
             }
         }
+    }
+
+    openMail?.let { id ->
+        BackHandler { onMailClosed() }
+        MailReader(id, onBack = onMailClosed)
+        return
     }
 
     detail?.let { id ->
