@@ -71,6 +71,10 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.12.0")
     implementation("androidx.glance:glance-appwidget:1.2.0")
     implementation("androidx.glance:glance-material3:1.2.0")
+    // Writing on PDFs: Jetpack PDF's editable viewer (pen, highlighter, eraser) on Jetpack Ink.
+    implementation("androidx.pdf:pdf-viewer-fragment:1.0.0-beta01")
+    implementation("androidx.pdf:pdf-ink:1.0.0-beta01")
+    implementation("androidx.fragment:fragment-ktx:1.9.1")
     // Embedded Tailscale (tsnet), built from ../tsbridge with gomobile (see tsbridge/build.sh).
     implementation(files("libs/tsbridge.aar"))
     implementation("io.ktor:ktor-client-core:3.6.0")
