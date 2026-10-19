@@ -8,9 +8,8 @@ import androidx.ink.strokes.Stroke
 /** What the pen does. */
 enum class Tool { PEN, HIGHLIGHTER, ERASER }
 
-/** Pen sizes in points (1/72 inch), down to a hairline for small math; highlighter sizes wider. */
-val PEN_SIZES = listOf(0.25f, 0.45f, 0.7f, 1.1f, 1.8f)
-val HIGHLIGHTER_SIZES = listOf(5f, 9f, 14f)
+/** Sizes: pen and highlighter widths in points (1/72 inch), the pen down to a hairline for small math; the eraser's reach in dp on screen. */
+val SIZE_RANGES = mapOf(Tool.PEN to 0.15f..4f, Tool.HIGHLIGHTER to 3f..24f, Tool.ERASER to 4f..48f)
 val PEN_COLORS = listOf(0xFF1B1B1F.toInt(), 0xFF1E5BD8.toInt(), 0xFFD93025.toInt(), 0xFF188038.toInt())
 val HIGHLIGHTER_COLORS = listOf(0x66FFD600, 0x6634C759, 0x66FF7EB6, 0x6640A9FF)
 

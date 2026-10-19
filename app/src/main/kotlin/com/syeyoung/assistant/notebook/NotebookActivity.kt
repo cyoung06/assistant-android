@@ -222,9 +222,10 @@ class NotebookActivity : ComponentActivity() {
 class ToolbarState {
     var tool by mutableStateOf(Tool.PEN)
     var penColor by mutableIntStateOf(0)
-    var penSize by mutableIntStateOf(1)
+    var penWidth by mutableFloatStateOf(0.45f)
     var highlighterColor by mutableIntStateOf(0)
-    var highlighterSize by mutableIntStateOf(1)
+    var highlighterWidth by mutableFloatStateOf(9f)
+    var eraserRadius by mutableFloatStateOf(10f)
     var mode by mutableStateOf(ScrollMode.PAGED)
     var edge by mutableStateOf(Edge.TOP)
     var along by mutableFloatStateOf(0.5f)
@@ -244,18 +245,20 @@ class ToolbarState {
     fun applyTo(v: NotebookView) {
         v.tool = tool
         v.penColor = PEN_COLORS[penColor]
-        v.penSize = PEN_SIZES[penSize]
+        v.penSize = penWidth
         v.highlighterColor = HIGHLIGHTER_COLORS[highlighterColor]
-        v.highlighterSize = HIGHLIGHTER_SIZES[highlighterSize]
+        v.highlighterSize = highlighterWidth
+        v.eraserRadius = eraserRadius
         v.mode = mode
     }
 
     fun load(p: SharedPreferences) {
         tool = runCatching { Tool.valueOf(p.getString("tool", "PEN")!!) }.getOrDefault(Tool.PEN)
         penColor = p.getInt("penColor", 0).coerceIn(PEN_COLORS.indices)
-        penSize = p.getInt("penSize", 1).coerceIn(PEN_SIZES.indices)
+        penWidth = p.getFloat("penWidth", 0.45f).coerceIn(SIZE_RANGES.getValue(Tool.PEN))
         highlighterColor = p.getInt("hlColor", 0).coerceIn(HIGHLIGHTER_COLORS.indices)
-        highlighterSize = p.getInt("hlSize", 1).coerceIn(HIGHLIGHTER_SIZES.indices)
+        highlighterWidth = p.getFloat("hlWidth", 9f).coerceIn(SIZE_RANGES.getValue(Tool.HIGHLIGHTER))
+        eraserRadius = p.getFloat("eraserRadius", 10f).coerceIn(SIZE_RANGES.getValue(Tool.ERASER))
         mode = runCatching { ScrollMode.valueOf(p.getString("scroll", "PAGED")!!) }.getOrDefault(ScrollMode.PAGED)
         edge = runCatching { Edge.valueOf(p.getString("edge", "TOP")!!) }.getOrDefault(Edge.TOP)
         along = p.getFloat("along", 0.5f)
@@ -263,8 +266,8 @@ class ToolbarState {
     }
 
     fun save(p: SharedPreferences) {
-        p.edit().putString("tool", tool.name).putInt("penColor", penColor).putInt("penSize", penSize)
-            .putInt("hlColor", highlighterColor).putInt("hlSize", highlighterSize).putString("scroll", mode.name)
+        p.edit().putString("tool", tool.name).putInt("penColor", penColor).putFloat("penWidth", penWidth)
+            .putInt("hlColor", highlighterColor).putFloat("hlWidth", highlighterWidth).putFloat("eraserRadius", eraserRadius).putString("scroll", mode.name)
             .putString("edge", edge.name).putFloat("along", along).putBoolean("collapsed", collapsed).apply()
     }
 }

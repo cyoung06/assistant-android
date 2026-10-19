@@ -40,9 +40,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     // ---- what the host sets and hears ----
     var tool = Tool.PEN
     var penColor = PEN_COLORS[0]
-    var penSize = PEN_SIZES[1]
+    var penSize = 0.45f
     var highlighterColor = HIGHLIGHTER_COLORS[0]
-    var highlighterSize = HIGHLIGHTER_SIZES[1]
+    var highlighterSize = 9f
+    /** How far the eraser reaches, in dp on screen. */
+    var eraserRadius = 10f
     var mode = ScrollMode.PAGED
         set(value) { if (field != value) { val p = currentPage; field = value; layoutPages(); goTo(p, animate = false) } }
     /** Called after any change to the ink (to save it). */
@@ -402,7 +404,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 val page = pageAt(x, y) ?: continue
                 val pt = floatArrayOf(x, y)
                 Matrix().also { pageMatrix(page).invert(it) }.mapPoints(pt)
-                val radius = 10f * resources.displayMetrics.density / (scales[page] * zoom)
+                val radius = eraserRadius * resources.displayMetrics.density / (scales[page] * zoom)
                 val hit = strokes.filter { it.page == page && it.hits(pt[0], pt[1], radius) }
                 if (hit.isNotEmpty()) { strokes.removeAll(hit.toSet()); erasedNow += hit; invalidate() }
             }

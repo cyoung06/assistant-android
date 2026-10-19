@@ -53,23 +53,23 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun NotebookHeader(ui: ToolbarState, title: String, onBack: () -> Unit, onAddPage: () -> Unit, onChange: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
-        Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", Modifier.size(20.dp)) }
-            Text(title.removeSuffix(".pdf"), Modifier.weight(1f), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (ui.status.isNotEmpty()) Text(ui.status, Modifier.padding(horizontal = 6.dp), fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+        Row(Modifier.fillMaxWidth().height(57.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", Modifier.size(26.dp)) }
+            Text(title.removeSuffix(".pdf"), Modifier.weight(1f), fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (ui.status.isNotEmpty()) Text(ui.status, Modifier.padding(horizontal = 8.dp), fontSize = 14.sp, color = MaterialTheme.colorScheme.outline)
             Text(
                 if (ui.pages == 0) "…" else "${ui.page + 1} / ${ui.pages}",
-                Modifier.clickable { ui.browsing = true }.padding(horizontal = 10.dp, vertical = 8.dp),
-                fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Modifier.clickable { ui.browsing = true }.padding(horizontal = 13.dp, vertical = 10.dp),
+                fontSize = 17.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             val marked = ui.page in ui.bookmarks
             IconButton({ ui.bookmarks = if (marked) ui.bookmarks - ui.page else ui.bookmarks + ui.page; onChange() }) {
-                Icon(if (marked) Icons.Filled.Star else Icons.Filled.StarBorder, if (marked) "Remove bookmark" else "Bookmark this page", Modifier.size(20.dp), tint = if (marked) Color(0xFFF2B600) else MaterialTheme.colorScheme.onSurface)
+                Icon(if (marked) Icons.Filled.Star else Icons.Filled.StarBorder, if (marked) "Remove bookmark" else "Bookmark this page", Modifier.size(26.dp), tint = if (marked) Color(0xFFF2B600) else MaterialTheme.colorScheme.onSurface)
             }
-            IconButton(onAddPage) { Icon(Icons.Filled.Add, "Add a page after this one", Modifier.size(20.dp)) }
+            IconButton(onAddPage) { Icon(Icons.Filled.Add, "Add a page after this one", Modifier.size(26.dp)) }
             var open by remember { mutableStateOf(false) }
             Box {
-                IconButton({ open = true }) { Icon(Icons.Filled.MoreVert, "More", Modifier.size(20.dp)) }
+                IconButton({ open = true }) { Icon(Icons.Filled.MoreVert, "More", Modifier.size(26.dp)) }
                 DropdownMenu(open, { open = false }) {
                     DropdownMenuItem({ Text("Pages and bookmarks") }, { open = false; ui.browsing = true })
                     DropdownMenuItem(
