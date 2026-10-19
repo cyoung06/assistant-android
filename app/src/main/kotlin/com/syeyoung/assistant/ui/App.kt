@@ -27,8 +27,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.PermanentDrawerSheet
-import androidx.compose.material3.PermanentNavigationDrawer
+import androidx.compose.material3.DismissibleDrawerSheet
+import androidx.compose.material3.DismissibleNavigationDrawer
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -43,6 +43,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -72,7 +73,7 @@ sealed interface Screen {
     data object Settings : Screen { override val title = "Settings" }
 }
 
-/** The app: a drawer (always open on a tablet) with the task views, projects, calendar and settings. */
+/** The app: a drawer (beside the content on a tablet, which the menu button hides) with the task views, projects, calendar and settings. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed: () -> Unit = {}) {
@@ -93,6 +94,10 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     var calendarDay by remember { mutableStateOf(LocalDate.now()) }
     val wide = LocalConfiguration.current.screenWidthDp >= 840
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    // On a tablet the drawer sits beside the content; whether it's shown is remembered.
+    val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
+    val side = rememberDrawerState(if (prefs.getBoolean("sidebarOpen", true)) DrawerValue.Open else DrawerValue.Closed)
+    LaunchedEffect(side) { snapshotFlow { side.currentValue }.collect { prefs.edit().putBoolean("sidebarOpen", it == DrawerValue.Open).apply() } }
 
     LaunchedEffect(Unit) { repo.refresh() }
     LaunchedEffect(openTask) { if (openTask != null) detail = openTask }
@@ -169,7 +174,9 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
             topBar = {
                 TopAppBar(
                     title = { Text(screen.title) },
-                    navigationIcon = { if (!wide) IconButton({ scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, "Navigation") } },
+                    navigationIcon = {
+                        IconButton({ scope.launch { if (!wide) drawer.open() else if (side.isOpen) side.close() else side.open() } }) { Icon(Icons.Filled.Menu, "Navigation") }
+                    },
                 )
             },
             floatingActionButton = {
@@ -220,7 +227,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
         }
     }
 
-    if (wide) PermanentNavigationDrawer(drawerContent = { PermanentDrawerSheet(Modifier.padding(end = 0.dp)) { nav() } }) { content() }
+    if (wide) DismissibleNavigationDrawer(drawerContent = { DismissibleDrawerSheet { nav() } }, drawerState = side, gesturesEnabled = false) { content() }
     else ModalNavigationDrawer(drawerContent = { ModalDrawerSheet { nav() } }, drawerState = drawer) { content() }
 
     if (creating) CreateTaskSheet((screen as? Screen.Project)?.id) { creating = false }
