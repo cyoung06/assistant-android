@@ -221,7 +221,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
             busy = "Uploading…"
-            for (u in uris) runCatching { uploadInto(context, repo, if (DriveProvider.readOnly(path)) root else path, u) }.onFailure { Toast.makeText(context, "Couldn't upload: ${it.message}", Toast.LENGTH_LONG).show() }
+            for (u in uris) runCatching { uploadInto(context, repo, path, u) }.onFailure { Toast.makeText(context, "Couldn't upload: ${it.message}", Toast.LENGTH_LONG).show() }
             busy = null
             FilesNav.changes++
         }
@@ -299,15 +299,13 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
     }
 
     // New things here: a notebook (opened to write in), uploaded files, or a folder.
-    // New things go into the folder shown (or, in Course files, which take none, the project's own).
-    val here = if (locked) root else path
-    val where = if (locked) " in $rootName" else ""
-    Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+    // Course files take nothing new.
+    if (!locked) Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
         androidx.compose.material3.FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New") }
         androidx.compose.material3.DropdownMenu(creating, { creating = false }) {
-            androidx.compose.material3.DropdownMenuItem({ Text("New notebook$where") }, { creating = false; notebook = true }, leadingIcon = { Icon(Icons.Filled.EditNote, null) })
-            androidx.compose.material3.DropdownMenuItem({ Text("Upload files$where") }, { creating = false; upload.launch(arrayOf("*/*")) }, leadingIcon = { Icon(Icons.Filled.Upload, null) })
-            androidx.compose.material3.DropdownMenuItem({ Text("New folder$where") }, { creating = false; naming = true }, leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
+            androidx.compose.material3.DropdownMenuItem({ Text("New notebook") }, { creating = false; notebook = true }, leadingIcon = { Icon(Icons.Filled.EditNote, null) })
+            androidx.compose.material3.DropdownMenuItem({ Text("Upload files") }, { creating = false; upload.launch(arrayOf("*/*")) }, leadingIcon = { Icon(Icons.Filled.Upload, null) })
+            androidx.compose.material3.DropdownMenuItem({ Text("New folder") }, { creating = false; naming = true }, leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
         }
     }
     }
@@ -316,7 +314,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
         notebook = false
         if (title != null) scope.launch {
             busy = "Making the notebook…"
-            runCatching { createNotebook(context, repo, if (DriveProvider.readOnly(path)) root else path, title, style) }
+            runCatching { createNotebook(context, repo, path, title, style) }
                 .onSuccess { Notebooks.open(context, DriveProvider.uri(context, it)) }
                 .onFailure { Toast.makeText(context, "Couldn't make the notebook: ${it.message}", Toast.LENGTH_LONG).show() }
             busy = null
@@ -325,7 +323,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
     }
     if (naming) NameDialog("New folder", "") { name ->
         naming = false
-        if (name != null) scope.launch { runCatching { repo.api().driveMakeFolder((if (DriveProvider.readOnly(path)) root else path) + name + "/") }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }; FilesNav.changes++ }
+        if (name != null) scope.launch { runCatching { repo.api().driveMakeFolder(path + name + "/") }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }; FilesNav.changes++ }
     }
     menuFor?.let { e ->
         var renaming by remember { mutableStateOf(false) }
