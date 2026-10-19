@@ -124,7 +124,17 @@ class NotebookActivity : ComponentActivity() {
                         Row(Modifier.fillMaxWidth().weight(1f)) {
                             Box(Modifier.fillMaxHeight().weight(1f)) {
                                 AndroidView({ stack }, Modifier.fillMaxSize())
-                                NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo, onInsert = ::insertFrom)
+                                if (ui.readOnly) {
+                                    androidx.compose.material3.Surface(
+                                        Modifier.align(Alignment.TopCenter).padding(top = 10.dp),
+                                        shape = androidx.compose.foundation.shape.RoundedCornerShape(50), shadowElevation = 6.dp,
+                                    ) {
+                                        Row(Modifier.padding(start = 16.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Text("Read-only", style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
+                                            TextButton({ ui.needsCopy = true }) { Text("Copy to edit") }
+                                        }
+                                    }
+                                } else NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo, onInsert = ::insertFrom)
                                 if (ui.searching) Box(Modifier.align(Alignment.TopEnd).padding(end = 8.dp)) { SearchResults(ui, ::showHit) }
                             }
                             // Beside the page, not over it: the page narrows to make room.
@@ -186,6 +196,8 @@ class NotebookActivity : ComponentActivity() {
                 }
             }.onSuccess { (opened, sizes) ->
                 file = opened.file
+                ui.readOnly = !writable(uri)
+                view.readOnly = ui.readOnly
                 ui.bookmarks = opened.bookmarks
                 view.setDocument(sizes, opened.strokes, opened.images)
                 // Diagnostics (adb only): open at a given zoom.
@@ -231,11 +243,18 @@ class NotebookActivity : ComponentActivity() {
                 dismissButton = { TextButton({ ui.jumping = false }) { Text("Cancel") } },
             )
         }
-        // A read-only PDF (a mail attachment, a download): its writing goes into a copy.
-        val copy = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { dest ->
+        // A read-only PDF (a course file, a mail attachment, a download): its writing goes into a
+        // copy, saved where it's chosen (starting beside the original's folder, for drive files).
+        val copy = rememberLauncherForActivityResult(object : ActivityResultContracts.CreateDocument("application/pdf") {
+            override fun createIntent(context: Context, input: String) = super.createIntent(context, input).apply {
+                startFolder()?.let { putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, it) }
+            }
+        }) { dest ->
             if (dest != null) {
                 file?.uri = dest
                 Notebooks.remember(this, dest)
+                ui.readOnly = false
+                view.readOnly = false
                 scheduleSave(now = true)
             }
         }
@@ -246,6 +265,23 @@ class NotebookActivity : ComponentActivity() {
     }
 
     private fun prefs(): SharedPreferences = getSharedPreferences("notebooks", Context.MODE_PRIVATE)
+
+    /** Whether a document's storage says it can be written (others are found out on saving). */
+    private fun writable(uri: android.net.Uri): Boolean {
+        if (!android.provider.DocumentsContract.isDocumentUri(this, uri)) return true
+        val flags = runCatching {
+            contentResolver.query(uri, arrayOf(android.provider.DocumentsContract.Document.COLUMN_FLAGS), null, null, null)?.use { c -> if (c.moveToFirst()) c.getInt(0) else null }
+        }.getOrNull() ?: return true
+        return flags and android.provider.DocumentsContract.Document.FLAG_SUPPORTS_WRITE != 0
+    }
+
+    /** Where a copy is first offered to go: a drive course file's project folder. */
+    private fun startFolder(): android.net.Uri? {
+        val uri = file?.uri ?: return null
+        if (uri.authority != com.syeyoung.assistant.drive.DriveProvider.authority(this)) return null
+        val parts = android.provider.DocumentsContract.getDocumentId(uri).split('/')
+        return if (parts.size >= 3 && parts[0] == "Projects") com.syeyoung.assistant.drive.DriveProvider.uri(this, "Projects/${parts[1]}/") else null
+    }
 
     private fun scheduleSave(now: Boolean = false) {
         dirty = true
@@ -552,6 +588,8 @@ class ToolbarState {
     var searchIndexing by mutableStateOf(false)
     var bookmarks by mutableStateOf<Set<Int>>(emptySet())
     var needsCopy by mutableStateOf(false)
+    /** Opened only for reading (its storage doesn't let it be written): write on a copy. */
+    var readOnly by mutableStateOf(false)
 
     fun applyTo(v: NotebookView) {
         v.tool = tool

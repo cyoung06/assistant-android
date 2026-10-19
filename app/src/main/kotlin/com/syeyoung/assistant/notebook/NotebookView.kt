@@ -45,6 +45,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     // ---- what the host sets and hears ----
     var tool = Tool.PEN
+    /** Only for reading (a course file kept as PLMS has it): the pen moves the page like a finger. */
+    var readOnly = false
     var penColor = PEN_COLORS[0]
     var penSize = 0.45f
     var highlighterColor = HIGHLIGHTER_COLORS[0]
@@ -545,6 +547,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         if (e.actionMasked == MotionEvent.ACTION_DOWN) {
             onTouchStart()
             gesture = when {
+                readOnly -> Gesture.FINGERS
                 // What's selected can be moved or resized with any tool; only the select tool picks
                 // things (the pen: tap or lasso; a finger: tap an image, or long-press to paste).
                 onSelection(e.x, e.y) -> Gesture.SELECT

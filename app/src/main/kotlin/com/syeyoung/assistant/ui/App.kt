@@ -227,7 +227,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                     Screen.Triage -> TriageScreen(onOpenTask = { detail = it }, onOpenMail = { mail = it })
                     Screen.Settings -> SettingsScreen()
                     Screen.Notebooks -> NotebooksScreen()
-                    Screen.Files -> FilesScreen()
+                    Screen.Files -> Files()
                     Screen.Initiatives -> InitiativesScreen { screen = Screen.Initiative(it.id, it.name) }
                     is Screen.Initiative -> {
                         BackHandler { screen = Screen.Initiatives }

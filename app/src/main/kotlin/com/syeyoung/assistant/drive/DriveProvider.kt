@@ -45,6 +45,9 @@ class DriveProvider : DocumentsProvider() {
             if (folder) Document.MIME_TYPE_DIR
             else MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
 
+        /** A project's Course files (and that folder): kept as PLMS has them, so only read here; copy one out to write on it. */
+        fun readOnly(path: String) = path.split('/').let { it.size >= 3 && it[0] == "Projects" && it[2] == "Course files" }
+
         /** Project folders (and Projects/ itself) follow the projects: not renamed or deleted from here. */
         private fun fixed(path: String) = path == "Projects/" || (path.startsWith("Projects/") && path.trimEnd('/').count { it == '/' } <= 1)
     }
@@ -105,9 +108,11 @@ class DriveProvider : DocumentsProvider() {
 
     private fun row(c: MatrixCursor, e: DriveEntry) {
         var flags = 0
-        if (e.folder) flags = flags or Document.FLAG_DIR_SUPPORTS_CREATE
-        else flags = flags or Document.FLAG_SUPPORTS_WRITE
-        if (!fixed(e.path)) flags = flags or Document.FLAG_SUPPORTS_DELETE or Document.FLAG_SUPPORTS_RENAME
+        if (!readOnly(e.path)) {
+            if (e.folder) flags = flags or Document.FLAG_DIR_SUPPORTS_CREATE
+            else flags = flags or Document.FLAG_SUPPORTS_WRITE
+            if (!fixed(e.path)) flags = flags or Document.FLAG_SUPPORTS_DELETE or Document.FLAG_SUPPORTS_RENAME
+        }
         c.newRow().add(Document.COLUMN_DOCUMENT_ID, e.path).add(Document.COLUMN_DISPLAY_NAME, e.name)
             .add(Document.COLUMN_MIME_TYPE, if (e.folder) Document.MIME_TYPE_DIR else (e.contentType ?: mimeOf(e.name, false)))
             .add(Document.COLUMN_SIZE, if (e.folder) null else e.propertySize)
@@ -122,6 +127,7 @@ class DriveProvider : DocumentsProvider() {
         val cache = File(context!!.cacheDir, "drive").apply { mkdirs() }
         val file = File(cache, Integer.toHexString(documentId.hashCode()) + "-" + documentId.substringAfterLast('/'))
         val writing = 'w' in mode
+        if (writing && readOnly(documentId)) throw SecurityException("$documentId is kept as PLMS has it; copy it out to write on it")
         // Truncating writes don't need what's there now.
         if (!(writing && 't' in mode)) {
             try {

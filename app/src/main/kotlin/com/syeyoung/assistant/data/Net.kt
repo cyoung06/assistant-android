@@ -38,7 +38,10 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.client.statement.bodyAsText
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
@@ -156,6 +159,11 @@ class Api(endpoint: Endpoint) {
 
     suspend fun driveMakeFolder(path: String) = send { http.post("$base/api/v1/drive/folder?path=${drivePath(path)}") }.let { }
     suspend fun driveMove(from: String, to: String) = send { http.post("$base/api/v1/drive/move?from=${drivePath(from)}&to=${drivePath(to)}") }.let { }
+    /** Copies a drive file or folder to [to] (numbered if that's taken); where the copy went. */
+    suspend fun driveCopy(from: String, to: String): String =
+        send { http.post("$base/api/v1/drive/copy?from=${drivePath(from)}&to=${drivePath(to)}") }.bodyAsText()
+            .let { kotlinx.serialization.json.Json.parseToJsonElement(it).jsonObject["path"]?.jsonPrimitive?.content ?: to }
+
     suspend fun driveDelete(path: String) = send { http.delete("$base/api/v1/drive/file?path=${drivePath(path)}") }.let { }
 
     suspend fun download(id: UUID): ByteArray = send { http.get("$base/api/v1/attachments/$id") }.body()
