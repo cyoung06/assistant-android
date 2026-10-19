@@ -10,11 +10,29 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.FileCopy
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -102,6 +120,12 @@ private object FilesNav {
     var split by mutableStateOf(false)
     /** Bumped when something changes, so every pane shows it. */
     var changes by mutableIntStateOf(0)
+    /** The file each browser was previewing. */
+    val previews = mutableMapOf<String, DriveEntry>()
+    /** Each browser's unfolded tree folders. */
+    val expanded = mutableMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateMap<String, Boolean>>()
+    /** What was last copied or cut, to paste. */
+    var clip by mutableStateOf<DriveClip?>(null)
 }
 
 /** Files, in one pane or two side by side. */
@@ -189,9 +213,11 @@ fun ProjectFiles(projectId: UUID, projectName: String) {
 private fun Modifier.clip12() = this.then(Modifier.clip(RoundedCornerShape(12.dp)))
 
 /**
- * Browsing a storage from its top [root] (a project's folder): icons by default (or a list),
- * folders first; PDFs open in the notebook editor and save back here; other files open in the app
- * that handles them. Upload, new folder, rename and delete.
+ * Browsing a storage from its top [root] (a project's folder). Wide: a folder tree on the left
+ * (like an editor's explorer; its width dragged at the divider) and, on the right, the folder
+ * chosen (icons or a list) or a preview of the file chosen. Narrow: folder by folder, files
+ * previewed full screen. Every entry has a menu (long-press, or right-click with a mouse);
+ * long-press and drag moves it, double-tap and drag copies it.
  */
 @Composable
 fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: Int = 0) {
@@ -202,20 +228,30 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
     var icons by remember { mutableStateOf(prefs.getString("files.view", "icons") == "icons") }
     val navKey = "$pane|$root"
     var path by remember(root) { mutableStateOf(FilesNav.folders[navKey] ?: root) }
+    var selected by remember(root) { mutableStateOf(FilesNav.previews[navKey]) }
     var entries by remember { mutableStateOf<List<DriveEntry>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var reload by remember { mutableIntStateOf(0) }
     var naming by remember { mutableStateOf(false) }
-    var menuFor by remember { mutableStateOf<DriveEntry?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
+    val expanded = remember(navKey) { FilesNav.expanded.getOrPut(navKey) { androidx.compose.runtime.mutableStateMapOf() } }
 
-    LaunchedEffect(path, reload, FilesNav.changes) {
+    LaunchedEffect(path, FilesNav.changes) {
         FilesNav.folders[navKey] = path
         error = null
         runCatching { repo.api().driveFolder(path).propertyEntries }.onSuccess { entries = it }.onFailure { error = it.message }
     }
-    if (path != root) BackHandler { path = path.trimEnd('/').substringBeforeLast('/') + "/" }
-    else if (onExit != null) BackHandler(onBack = onExit)
+    LaunchedEffect(selected) { if (selected == null) FilesNav.previews.remove(navKey) else FilesNav.previews[navKey] = selected!! }
+    // The tree shows where we are.
+    LaunchedEffect(path) {
+        var at = path
+        while (at.length > root.length) { expanded[at] = true; at = parentOf(at) }
+    }
+    val goTo = { folder: String -> path = folder; selected = null }
+    when {
+        selected != null -> BackHandler { selected = null }
+        path != root -> BackHandler { goTo(parentOf(path)) }
+        onExit != null -> BackHandler(onBack = onExit)
+    }
 
     val upload = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
@@ -239,75 +275,131 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
         }
         Unit
     }
-    var paneTarget by remember { mutableStateOf(false) }
-    Box(Modifier.fillMaxSize().driveDropTarget(locked, onHover = { paneTarget = it }) { drop(path, it) }.then(if (paneTarget) Modifier.border(2.dp, MaterialTheme.colorScheme.primary) else Modifier)) {
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            // Where we are, from the project's top.
-            val parts = path.removePrefix(root).split('/').filter { it.isNotEmpty() }
-            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                Crumb(rootName) { path = root }
-                parts.forEachIndexed { i, p ->
-                    Text("›", color = MaterialTheme.colorScheme.outline)
-                    Crumb(p) { path = root + parts.take(i + 1).joinToString("/") + "/" }
+    val actions = rememberEntryActions(onOpen = { e -> if (e.folder) goTo(e.path) else selected = e }, onBusy = { busy = it })
+    val drag = { e: DriveEntry, copy: Boolean -> startDriveDrag(view, context, e, copy) }
+
+    /** The folder shown: its path, then what's in it. */
+    @Composable
+    fun FolderContents(withCrumbs: Boolean) {
+        var paneTarget by remember { mutableStateOf(false) }
+        Box(Modifier.fillMaxSize().driveDropTarget(locked, onHover = { paneTarget = it }) { drop(path, it) }.then(if (paneTarget) Modifier.border(2.dp, MaterialTheme.colorScheme.primary) else Modifier)) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // Where we are, from the project's top.
+                    val parts = path.removePrefix(root).split('/').filter { it.isNotEmpty() }
+                    Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                        if (withCrumbs || parts.isEmpty()) Crumb(rootName) { goTo(root) }
+                        parts.forEachIndexed { i, p ->
+                            if (withCrumbs || i > 0) Text("›", color = MaterialTheme.colorScheme.outline)
+                            Crumb(p) { goTo(root + parts.take(i + 1).joinToString("/") + "/") }
+                        }
+                    }
+                    busy?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline) }
+                    IconButton({ icons = !icons; prefs.edit().putString("files.view", if (icons) "icons" else "list").apply() }) {
+                        Icon(if (icons) Icons.AutoMirrored.Filled.List else Icons.Filled.GridView, if (icons) "Show as list" else "Show as icons")
+                    }
+                    if (withCrumbs) {
+                        IconButton({ FilesNav.changes++ }) { Icon(Icons.Filled.Refresh, "Refresh") }
+                        SplitButton()
+                    }
                 }
-            }
-            busy?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline) }
-            IconButton({ icons = !icons; prefs.edit().putString("files.view", if (icons) "icons" else "list").apply() }) {
-                Icon(if (icons) Icons.AutoMirrored.Filled.List else Icons.Filled.GridView, if (icons) "Show as list" else "Show as icons")
-            }
-            IconButton({ FilesNav.changes++ }) { Icon(Icons.Filled.Refresh, "Refresh") }
-            SplitButton()
-        }
-        error?.let { Text("Couldn't reach the drive: $it", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
-        if (locked) Text("From PLMS, kept as it is there: drag a copy out to write on it.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        val list = entries.orEmpty()
-        if (entries != null && list.isEmpty()) Text("Nothing here yet. Upload files, or save notebooks here.", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        val open = { e: DriveEntry -> if (e.folder) path = e.path else openFile(context, e) }
-        if (icons) {
-            LazyVerticalGrid(GridCells.Adaptive(116.dp), Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 88.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(list, key = { it.path }) { e ->
-                    var hover by remember { mutableStateOf(false) }
-                    Column(
-                        Modifier.clip(RoundedCornerShape(10.dp))
-                            .then(if (hover) Modifier.background(MaterialTheme.colorScheme.primaryContainer) else Modifier)
-                            .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path), onHover = { hover = it }) { drop(e.path, it) } else Modifier)
-                            .driveGestures({ open(e) }, { menuFor = e }) { copy -> startDriveDrag(view, context, e, copy) }.padding(8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        if (e.name.lowercase().endsWith(".pdf")) PdfThumb(e) { Icon(iconOf(e), null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        else Icon(iconOf(e), null, Modifier.size(56.dp), tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.height(6.dp))
-                        Text(e.name, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, fontSize = 13.sp)
+                error?.let { Text("Couldn't reach the drive: $it", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
+                if (locked) Text("From PLMS, kept as it is there: drag a copy out to write on it.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val list = entries.orEmpty()
+                if (entries != null && list.isEmpty()) Text("Nothing here yet. Upload files, or save notebooks here.", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (icons) {
+                    LazyVerticalGrid(GridCells.Adaptive(116.dp), Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 88.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(list, key = { it.path }) { e ->
+                            var hover by remember { mutableStateOf(false) }
+                            Box {
+                                Column(
+                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                                        .then(if (hover) Modifier.background(MaterialTheme.colorScheme.primaryContainer) else Modifier)
+                                        .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path), onHover = { hover = it }) { drop(e.path, it) } else Modifier)
+                                        .driveGestures({ actions.open(e) }, { actions.menu(e) }) { copy -> drag(e, copy) }.padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
+                                    if (e.name.lowercase().endsWith(".pdf")) PdfThumb(e) { Icon(iconOf(e), null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                    else Icon(iconOf(e), null, Modifier.size(56.dp), tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(e.name, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, fontSize = 13.sp)
+                                }
+                                EntryMenu(e, actions)
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 88.dp)) {
+                        items(list, key = { it.path }) { e ->
+                            Box {
+                                ListItem(
+                                    leadingContent = { Icon(iconOf(e), null, tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) },
+                                    headlineContent = { Text(e.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    supportingContent = { Text(listOfNotNull(if (e.folder) null else size(e.propertySize), e.modified?.let(::date)).joinToString(" · ")) },
+                                    modifier = Modifier
+                                        .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path)) { drop(e.path, it) } else Modifier)
+                                        .driveGestures({ actions.open(e) }, { actions.menu(e) }) { copy -> drag(e, copy) },
+                                )
+                                EntryMenu(e, actions)
+                            }
+                        }
                     }
                 }
             }
-        } else {
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(list, key = { it.path }) { e ->
-                    ListItem(
-                        leadingContent = { Icon(iconOf(e), null, tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) },
-                        headlineContent = { Text(e.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(listOfNotNull(if (e.folder) null else size(e.propertySize), e.modified?.let(::date)).joinToString(" · ")) },
-                        modifier = Modifier
-                            .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path)) { drop(e.path, it) } else Modifier)
-                            .driveGestures({ open(e) }, { menuFor = e }) { copy -> startDriveDrag(view, context, e, copy) },
-                    )
+
+            // New things here: a notebook (opened to write in), uploaded files, a folder, or what was copied.
+            // Course files take nothing new.
+            if (!locked) Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+                androidx.compose.material3.FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New") }
+                androidx.compose.material3.DropdownMenu(creating, { creating = false }) {
+                    androidx.compose.material3.DropdownMenuItem({ Text("New notebook") }, { creating = false; notebook = true }, leadingIcon = { Icon(Icons.Filled.EditNote, null) })
+                    androidx.compose.material3.DropdownMenuItem({ Text("Upload files") }, { creating = false; upload.launch(arrayOf("*/*")) }, leadingIcon = { Icon(Icons.Filled.Upload, null) })
+                    androidx.compose.material3.DropdownMenuItem({ Text("New folder") }, { creating = false; naming = true }, leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
+                    FilesNav.clip?.let { c ->
+                        androidx.compose.material3.DropdownMenuItem({ Text("Paste “${c.entry.name}”") }, { creating = false; actions.paste(path) }, leadingIcon = { Icon(Icons.Filled.ContentPaste, null) })
+                    }
                 }
             }
         }
     }
 
-    // New things here: a notebook (opened to write in), uploaded files, or a folder.
-    // Course files take nothing new.
-    if (!locked) Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
-        androidx.compose.material3.FloatingActionButton({ creating = true }) { Icon(Icons.Filled.Add, "New") }
-        androidx.compose.material3.DropdownMenu(creating, { creating = false }) {
-            androidx.compose.material3.DropdownMenuItem({ Text("New notebook") }, { creating = false; notebook = true }, leadingIcon = { Icon(Icons.Filled.EditNote, null) })
-            androidx.compose.material3.DropdownMenuItem({ Text("Upload files") }, { creating = false; upload.launch(arrayOf("*/*")) }, leadingIcon = { Icon(Icons.Filled.Upload, null) })
-            androidx.compose.material3.DropdownMenuItem({ Text("New folder") }, { creating = false; naming = true }, leadingIcon = { Icon(Icons.Filled.CreateNewFolder, null) })
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        if (maxWidth >= 720.dp) {
+            // The explorer: tree | folder or preview.
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            var treeWidth by remember { mutableStateOf(prefs.getFloat("files.treeWidth", 280f).dp) }
+            Row(Modifier.fillMaxSize()) {
+                Column(Modifier.width(treeWidth).fillMaxHeight()) {
+                    Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(rootName, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        IconButton({ FilesNav.changes++ }) { Icon(Icons.Filled.Refresh, "Refresh") }
+                        SplitButton()
+                    }
+                    FolderTree(root, rootName, path, selected?.path, expanded, actions, drag, drop, onRoot = { goTo(root) })
+                }
+                // The divider: drag to resize the tree.
+                Box(
+                    Modifier.fillMaxHeight().width(9.dp).pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = { prefs.edit().putFloat("files.treeWidth", treeWidth.value).apply() },
+                        ) { change, amount ->
+                            change.consume()
+                            treeWidth = (treeWidth + with(density) { amount.toDp() }).coerceIn(180.dp, 520.dp)
+                        }
+                    },
+                    contentAlignment = Alignment.Center,
+                ) { androidx.compose.material3.VerticalDivider() }
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    val s = selected
+                    if (s != null) FilePreview(s, fullScreen = false, onClose = { selected = null }, onOpenWith = { actions.openWith(s) })
+                    else FolderContents(withCrumbs = false)
+                }
+            }
+        } else {
+            val s = selected
+            if (s != null) FilePreview(s, fullScreen = true, onClose = { selected = null }, onOpenWith = { actions.openWith(s) })
+            else FolderContents(withCrumbs = true)
         }
-    }
     }
 
     if (notebook) NewNotebookDialog { title, style ->
@@ -325,26 +417,239 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
         naming = false
         if (name != null) scope.launch { runCatching { repo.api().driveMakeFolder(path + name + "/") }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }; FilesNav.changes++ }
     }
-    menuFor?.let { e ->
-        var renaming by remember { mutableStateOf(false) }
-        if (renaming) NameDialog("Rename", e.name) { name ->
-            menuFor = null
-            if (name != null && name != e.name) scope.launch {
-                runCatching { repo.api().driveMove(e.path, path + name + if (e.folder) "/" else "") }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }
-                FilesNav.changes++
+    actions.Dialogs()
+}
+
+/** The folder a drive path is in. */
+private fun parentOf(path: String) = path.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
+
+/** Project folders (and Projects/ itself) follow the projects: not renamed, moved or deleted from here. */
+private fun fixedPath(path: String) = path == PROJECTS || (path.startsWith(PROJECTS) && path.trimEnd('/').count { it == '/' } <= 1)
+
+/** Something copied or cut, to paste into another folder. */
+class DriveClip(val entry: DriveEntry, val cut: Boolean)
+
+/** What can be done with an entry (from its menu), and the dialogs that asks for. */
+class EntryActions(
+    private val context: Context,
+    private val repo: Repo,
+    private val scope: kotlinx.coroutines.CoroutineScope,
+    val open: (DriveEntry) -> Unit,
+    private val onBusy: (String?) -> Unit,
+    private val saveLauncher: androidx.activity.result.ActivityResultLauncher<String>,
+) {
+    /** The entry whose menu is open. */
+    var menuFor by mutableStateOf<String?>(null)
+    var renaming by mutableStateOf<DriveEntry?>(null)
+    var deleting by mutableStateOf<DriveEntry?>(null)
+    var saving: DriveEntry? = null
+
+    fun menu(e: DriveEntry) { menuFor = e.path }
+
+    private fun run(what: String?, block: suspend () -> Unit) = scope.launch {
+        onBusy(what)
+        runCatching { block() }.onFailure { Toast.makeText(context, it.message ?: "Failed", Toast.LENGTH_LONG).show() }
+        onBusy(null)
+        FilesNav.changes++
+    }
+
+    fun openInEditor(e: DriveEntry) = Notebooks.open(context, DriveProvider.uri(context, e.path))
+
+    fun openWith(e: DriveEntry) {
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(DriveProvider.uri(context, e.path), e.contentType ?: DriveProvider.mimeOf(e.name, false)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        runCatching { context.startActivity(Intent.createChooser(view, "Open ${e.name} with")) }.onFailure { Toast.makeText(context, "No app here opens ${e.name}", Toast.LENGTH_SHORT).show() }
+    }
+
+    fun share(e: DriveEntry) {
+        val send = Intent(Intent.ACTION_SEND).setType(e.contentType ?: DriveProvider.mimeOf(e.name, false))
+            .putExtra(Intent.EXTRA_STREAM, DriveProvider.uri(context, e.path)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        context.startActivity(Intent.createChooser(send, "Share ${e.name}"))
+    }
+
+    fun copy(e: DriveEntry) { FilesNav.clip = DriveClip(e, cut = false) }
+    fun cut(e: DriveEntry) { FilesNav.clip = DriveClip(e, cut = true) }
+
+    /** Puts what was copied or cut into [folder]. */
+    fun paste(folder: String) {
+        val c = FilesNav.clip ?: return
+        val from = c.entry.path
+        val to = folder + c.entry.name + if (c.entry.folder) "/" else ""
+        if (folder.startsWith(from)) return Toast.makeText(context, "Can't put a folder inside itself", Toast.LENGTH_SHORT).show()
+        if (c.cut && parentOf(from) == folder) { FilesNav.clip = null; return }
+        run(if (c.cut) "Moving…" else "Copying…") {
+            if (c.cut) { repo.api().driveMove(from, to); FilesNav.clip = null } else repo.api().driveCopy(from, to)
+        }
+    }
+
+    fun duplicate(e: DriveEntry) = run("Copying…") { repo.api().driveCopy(e.path, e.path) }
+
+    fun rename(e: DriveEntry, name: String) = run(null) { repo.api().driveMove(e.path, parentOf(e.path) + name + if (e.folder) "/" else "") }
+
+    fun delete(e: DriveEntry) = run("Deleting…") { repo.api().driveDelete(e.path) }
+
+    fun copyPath(e: DriveEntry) {
+        val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText(e.name, e.path))
+    }
+
+    fun saveToDevice(e: DriveEntry) { saving = e; saveLauncher.launch(e.name) }
+
+    /** Writes the file being saved to where it was asked to go. */
+    fun saveTo(dest: Uri) {
+        val e = saving ?: return
+        saving = null
+        run("Saving…") {
+            withContext(Dispatchers.IO) {
+                val f = cached(context, e)
+                context.contentResolver.openOutputStream(dest, "wt")!!.use { out -> f.inputStream().use { it.copyTo(out) } }
             }
-        } else AlertDialog(
-            onDismissRequest = { menuFor = null },
-            title = { Text(e.name) },
-            text = { Text(if (e.folder) "Folder" else size(e.propertySize)) },
-            confirmButton = { if (!DriveProvider.readOnly(e.path)) TextButton({ renaming = true }) { Text("Rename") } },
-            dismissButton = {
-                if (!DriveProvider.readOnly(e.path)) TextButton({
-                    menuFor = null
-                    scope.launch { runCatching { repo.api().driveDelete(e.path) }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }; FilesNav.changes++ }
-                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-            },
-        )
+            withContext(Dispatchers.Main) { Toast.makeText(context, "Saved ${e.name}", Toast.LENGTH_SHORT).show() }
+        }
+    }
+
+    @Composable
+    fun Dialogs() {
+        renaming?.let { e ->
+            NameDialog("Rename", e.name) { name ->
+                renaming = null
+                if (name != null && name != e.name) rename(e, name)
+            }
+        }
+        deleting?.let { e ->
+            AlertDialog(
+                onDismissRequest = { deleting = null },
+                title = { Text("Delete ${e.name}?") },
+                text = { Text(if (e.folder) "The folder and everything in it are deleted." else "It's deleted from the drive.") },
+                confirmButton = { TextButton({ deleting = null; delete(e) }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
+                dismissButton = { TextButton({ deleting = null }) { Text("Cancel") } },
+            )
+        }
+    }
+}
+
+@Composable
+private fun rememberEntryActions(onOpen: (DriveEntry) -> Unit, onBusy: (String?) -> Unit): EntryActions {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var actions: EntryActions? = null
+    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { dest -> if (dest != null) actions?.saveTo(dest) }
+    val currentOpen by androidx.compose.runtime.rememberUpdatedState(onOpen)
+    val currentBusy by androidx.compose.runtime.rememberUpdatedState(onBusy)
+    actions = remember { EntryActions(context, Repo.get(context), scope, { currentOpen(it) }, { currentBusy(it) }, save) }
+    return actions
+}
+
+/** An entry's menu, dropped down from it while open. */
+@Composable
+private fun EntryMenu(e: DriveEntry, actions: EntryActions) {
+    val open = actions.menuFor == e.path
+    if (!open) return
+    val close = { actions.menuFor = null }
+    val readOnly = DriveProvider.readOnly(e.path)
+    val changeable = !readOnly && !fixedPath(e.path)
+    val parentTakes = !DriveProvider.readOnly(parentOf(e.path)) && parentOf(e.path) != PROJECTS
+    val pdf = e.name.lowercase().endsWith(".pdf")
+    androidx.compose.material3.DropdownMenu(open, close) {
+        @Composable
+        fun Item(text: String, icon: ImageVector, color: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified, action: () -> Unit) =
+            androidx.compose.material3.DropdownMenuItem({ Text(text, color = color) }, { close(); action() }, leadingIcon = { Icon(icon, null, tint = if (color == androidx.compose.ui.graphics.Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else color) })
+        Item("Open", if (e.folder) Icons.Filled.FolderOpen else Icons.Filled.Visibility) { actions.open(e) }
+        if (pdf) Item("Open in editor", Icons.Filled.EditNote) { actions.openInEditor(e) }
+        if (!e.folder) {
+            Item("Open with…", Icons.AutoMirrored.Filled.OpenInNew) { actions.openWith(e) }
+            Item("Share", Icons.Filled.Share) { actions.share(e) }
+        }
+        androidx.compose.material3.HorizontalDivider()
+        Item("Copy", Icons.Filled.ContentCopy) { actions.copy(e) }
+        if (changeable) Item("Cut", Icons.Filled.ContentCut) { actions.cut(e) }
+        FilesNav.clip?.let { c -> if (e.folder && !readOnly) Item("Paste “${c.entry.name}” here", Icons.Filled.ContentPaste) { actions.paste(e.path) } }
+        if (parentTakes) Item("Duplicate", Icons.Filled.FileCopy) { actions.duplicate(e) }
+        if (changeable) Item("Rename", Icons.Filled.DriveFileRenameOutline) { actions.renaming = e }
+        androidx.compose.material3.HorizontalDivider()
+        Item("Copy path", Icons.Filled.Link) { actions.copyPath(e) }
+        if (!e.folder) Item("Save to device", Icons.Filled.Download) { actions.saveToDevice(e) }
+        if (changeable) Item("Delete", Icons.Filled.Delete, MaterialTheme.colorScheme.error) { actions.deleting = e }
+    }
+}
+
+/** One row of the tree: an entry at a depth. */
+private class TreeRow(val entry: DriveEntry, val depth: Int)
+
+/**
+ * The storage's folders and files as a tree: tap a folder to open it (and show what's in it),
+ * its arrow to fold it; tap a file to preview it. What's open or previewed is highlighted.
+ */
+@Composable
+private fun FolderTree(
+    root: String,
+    rootName: String,
+    current: String,
+    selected: String?,
+    expanded: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Boolean>,
+    actions: EntryActions,
+    drag: (DriveEntry, Boolean) -> Unit,
+    drop: (String, androidx.compose.ui.draganddrop.DragAndDropEvent) -> Unit,
+    onRoot: () -> Unit,
+) {
+    val repo = Repo.get(LocalContext.current)
+    val children = remember(root) { androidx.compose.runtime.mutableStateMapOf<String, List<DriveEntry>>() }
+    // Each open folder's entries (again when anything changes).
+    val open = listOf(root) + expanded.filterValues { it }.keys.filter { it.startsWith(root) }.sorted()
+    for (folder in open) androidx.compose.runtime.key(folder) {
+        LaunchedEffect(folder, FilesNav.changes) {
+            runCatching { repo.api().driveFolder(folder).propertyEntries }.onSuccess { children[folder] = it }
+        }
+    }
+    val rows = buildList {
+        fun visit(folder: String, depth: Int) {
+            for (e in children[folder].orEmpty()) {
+                add(TreeRow(e, depth))
+                if (e.folder && expanded[e.path] == true) visit(e.path, depth + 1)
+            }
+        }
+        visit(root, 1)
+    }
+    val on = MaterialTheme.colorScheme.secondaryContainer
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
+        item(key = root) {
+            var hover by remember { mutableStateOf(false) }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp).clip(RoundedCornerShape(6.dp))
+                    .background(if (hover) MaterialTheme.colorScheme.primaryContainer else if (current == root && selected == null) on else androidx.compose.ui.graphics.Color.Transparent)
+                    .driveDropTarget(DriveProvider.readOnly(root), onHover = { hover = it }) { drop(root, it) }
+                    .clickable(onClick = onRoot).padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Folder, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Text(rootName, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        items(rows, key = { it.entry.path }) { row ->
+            val e = row.entry
+            var hover by remember { mutableStateOf(false) }
+            val highlighted = if (e.folder) selected == null && current == e.path else selected == e.path
+            Box {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 4.dp).clip(RoundedCornerShape(6.dp))
+                        .background(if (hover) MaterialTheme.colorScheme.primaryContainer else if (highlighted) on else androidx.compose.ui.graphics.Color.Transparent)
+                        .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path), onHover = { hover = it }) { drop(e.path, it) } else Modifier)
+                        .driveGestures({ if (e.folder) { expanded[e.path] = true; actions.open(e) } else actions.open(e) }, { actions.menu(e) }) { copy -> drag(e, copy) }
+                        .padding(start = (row.depth * 14).dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (e.folder) {
+                        val isOpen = expanded[e.path] == true
+                        Icon(
+                            if (isOpen) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight, if (isOpen) "Fold" else "Unfold",
+                            Modifier.size(32.dp).clip(RoundedCornerShape(4.dp)).clickable { expanded[e.path] = !isOpen }.padding(6.dp),
+                        )
+                    } else Spacer(Modifier.width(32.dp))
+                    Icon(iconOf(e), null, Modifier.size(18.dp), tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(e.name, Modifier.padding(start = 8.dp, top = 7.dp, bottom = 7.dp), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                EntryMenu(e, actions)
+            }
+        }
     }
 }
 
@@ -424,6 +729,12 @@ private fun Modifier.driveGestures(onTap: () -> Unit, onMenu: () -> Unit, onDrag
         val slop = viewConfiguration.touchSlop
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
+            // A mouse's right button: the menu, at once.
+            if (currentEvent.buttons.isSecondaryPressed) {
+                down.consume()
+                onMenu()
+                return@awaitEachGesture
+            }
             // Shown pressed while touched (released however the touch ends).
             val press = androidx.compose.foundation.interaction.PressInteraction.Press(down.position)
             scope.launch { presses.emit(press) }
@@ -530,10 +841,6 @@ private suspend fun dropInto(context: Context, repo: Repo, folder: String, event
     }
 }
 
-/** Tap to open, long-press for more. */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-private fun Modifier.androidLongClick(onClick: () -> Unit, onLongClick: () -> Unit) = this.then(Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick))
-
 private fun iconOf(e: DriveEntry): ImageVector {
     if (e.folder) return Icons.Filled.Folder
     val n = e.name.lowercase()
@@ -543,14 +850,6 @@ private fun iconOf(e: DriveEntry): ImageVector {
         Regex("\\.(mp4|mov|webm|mkv)$").containsMatchIn(n) -> Icons.Filled.Movie
         else -> Icons.Filled.InsertDriveFile
     }
-}
-
-/** PDFs in the notebook editor (saved back to the drive); anything else in the app that handles it. */
-private fun openFile(context: Context, e: DriveEntry) {
-    val uri = DriveProvider.uri(context, e.path)
-    if (e.name.lowercase().endsWith(".pdf")) return Notebooks.open(context, uri)
-    val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, e.contentType ?: DriveProvider.mimeOf(e.name, false)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    runCatching { context.startActivity(view) }.onFailure { Toast.makeText(context, "No app here opens ${e.name}", Toast.LENGTH_SHORT).show() }
 }
 
 /** Copies a picked file into the drive folder [folder]. */
@@ -565,11 +864,6 @@ private suspend fun uploadInto(context: Context, repo: Repo, folder: String, uri
     }
 }
 
-private fun size(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-    bytes < 1024L * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / 1048576.0)
-    else -> String.format(Locale.US, "%.1f GB", bytes / 1073741824.0)
-}
+private fun size(bytes: Long) = sizeText(bytes)
 
 private fun date(iso: String) = runCatching { OffsetDateTime.parse(iso).format(DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.ENGLISH)) }.getOrDefault("")
