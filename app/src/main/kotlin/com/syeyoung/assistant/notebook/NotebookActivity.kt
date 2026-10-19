@@ -63,7 +63,7 @@ class NotebookActivity : FragmentActivity() {
 
         if (savedInstanceState == null) {
             @SuppressLint("NewApi") // checked by canAnnotate()
-            val fragment = if (canAnnotate()) NotebookFragment() else PdfViewerFragment().also {
+            val fragment = if (canAnnotate()) NotebookFragment() else ReadOnlyFragment().also {
                 Toast.makeText(this, "Writing on PDFs needs a newer Android system update; showing it read-only.", Toast.LENGTH_LONG).show()
             }
             supportFragmentManager.beginTransaction().replace(CONTAINER, fragment).commitNow()
@@ -113,6 +113,20 @@ class NotebookActivity : FragmentActivity() {
         }
     }
 
+    /** The PDF couldn't be opened: say so (instead of loading forever), and keep the cause for the crash report the app uploads. */
+    fun loadFailed(e: Throwable) {
+        runCatching {
+            val trace = java.io.StringWriter().also { e.printStackTrace(java.io.PrintWriter(it)) }
+            com.syeyoung.assistant.data.Crashes.file(this).appendText("--- ${java.time.Instant.now()} notebook couldn't open ${Notebooks.name(this, uri)} (canAnnotate=${canAnnotate()})\n$trace\n")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Couldn't open this PDF")
+            .setMessage(e.message ?: e.javaClass.simpleName)
+            .setPositiveButton("Close") { _, _ -> finish() }
+            .setOnCancelListener { finish() }
+            .show()
+    }
+
     fun failed(e: Throwable) {
         closeAfterSave = false
         Toast.makeText(this, "Couldn't save: ${e.message}", Toast.LENGTH_LONG).show()
@@ -144,4 +158,9 @@ class NotebookFragment : EditablePdfViewerFragment() {
     override fun onExitEditMode() { host?.editing(false) }
     override fun onApplyEditsSuccess(handle: PdfWriteHandle) { host?.write(handle) ?: handle.close() }
     override fun onApplyEditsFailed(error: Throwable) { host?.failed(error) }
+    override fun onLoadDocumentError(error: Throwable) { host?.loadFailed(error) }
+}
+
+class ReadOnlyFragment : PdfViewerFragment() {
+    override fun onLoadDocumentError(error: Throwable) { (activity as? NotebookActivity)?.loadFailed(error) }
 }

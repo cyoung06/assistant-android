@@ -2,8 +2,6 @@ package com.syeyoung.assistant.notebook
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -41,18 +39,10 @@ object Notebooks {
 
     fun copyName(context: Context, uri: Uri) = name(context, uri).removeSuffix(".pdf") + " (notes).pdf"
 
-    /** A blank notebook: [pages] A4 pages with a faint dot grid, written to [uri]. */
+    /** A blank notebook: [pages] plain A4 pages, written to [uri]. (Pages stay empty: drawn patterns made every page slow to render.) */
     fun writeBlank(context: Context, uri: Uri, pages: Int = 20) {
         val doc = PdfDocument()
-        val dot = Paint().apply { color = Color.rgb(205, 205, 210) }
-        repeat(pages) { i ->
-            val page = doc.startPage(PdfDocument.PageInfo.Builder(595, 842, i + 1).create())
-            val c = page.canvas
-            c.drawColor(Color.WHITE)
-            var y = 28f
-            while (y < 842) { var x = 28f; while (x < 595) { c.drawCircle(x, y, 0.7f, dot); x += 17f }; y += 17f }
-            doc.finishPage(page)
-        }
+        repeat(pages) { i -> doc.finishPage(doc.startPage(PdfDocument.PageInfo.Builder(595, 842, i + 1).create())) }
         context.contentResolver.openOutputStream(uri, "wt")!!.use { doc.writeTo(it) }
         doc.close()
     }
