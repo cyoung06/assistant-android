@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -72,7 +73,7 @@ private val ITEM = 36.dp
  * as a slider); colours for the current tool; undo and redo. (Pages and the rest are in the header.)
  */
 @Composable
-fun NotebookToolbar(ui: ToolbarState, onChange: () -> Unit, onUndo: () -> Unit, onRedo: () -> Unit) {
+fun NotebookToolbar(ui: ToolbarState, onChange: () -> Unit, onUndo: () -> Unit, onRedo: () -> Unit, onInsert: (String) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
         val margin = with(density) { 10.dp.toPx() }
@@ -146,6 +147,17 @@ fun NotebookToolbar(ui: ToolbarState, onChange: () -> Unit, onUndo: () -> Unit, 
                     Tools(ui, onChange)
                     Divider(vertical)
                     Swatches(ui, onChange)
+                    Divider(vertical)
+                    // + : an image from the gallery, a photo, or what's on the clipboard.
+                    var adding by remember { mutableStateOf(false) }
+                    Box {
+                        IconItem(Icons.Filled.Add, "Insert", true) { adding = true }
+                        DropdownMenu(adding, { adding = false }) {
+                            androidx.compose.material3.DropdownMenuItem({ Text("Image…") }, { adding = false; onInsert("image") })
+                            androidx.compose.material3.DropdownMenuItem({ Text("Take a photo") }, { adding = false; onInsert("camera") })
+                            androidx.compose.material3.DropdownMenuItem({ Text("Paste") }, { adding = false; onInsert("paste") })
+                        }
+                    }
                     Divider(vertical)
                     IconItem(Icons.AutoMirrored.Filled.Undo, "Undo", ui.canUndo, onUndo)
                     IconItem(Icons.AutoMirrored.Filled.Redo, "Redo", ui.canRedo, onRedo)

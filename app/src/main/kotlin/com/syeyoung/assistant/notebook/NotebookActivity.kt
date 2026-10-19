@@ -33,6 +33,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.padding
@@ -86,34 +89,42 @@ class NotebookActivity : ComponentActivity() {
         val stack = FrameLayout(this).apply {
             addView(view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(ink, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            // Images dragged in (from another app beside this one, or within the screen).
-            setOnDragListener { _, event ->
-                when (event.action) {
-                    android.view.DragEvent.ACTION_DRAG_STARTED -> (0 until event.clipDescription.mimeTypeCount).any { event.clipDescription.getMimeType(it).startsWith("image/") }
-                    android.view.DragEvent.ACTION_DROP -> {
-                        val permissions = requestDragAndDropPermissions(event)
-                        val uris = (0 until event.clipData.itemCount).mapNotNull { event.clipData.getItemAt(it).uri }
-                        lifecycleScope.launch {
-                            uris.forEach { insertImage(it, event.x, event.y) }
-                            permissions?.release()
-                        }
-                        true
-                    }
-                    else -> true
-                }
-            }
         }
 
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 val changed = { ui.applyTo(view); ui.save(prefs()) }
-                Box(Modifier.fillMaxSize()) {
+                // Images dragged in from another app (split screen, pop-up view) land where they're dropped.
+                val dropTarget = remember {
+                    object : androidx.compose.ui.draganddrop.DragAndDropTarget {
+                        override fun onDrop(event: androidx.compose.ui.draganddrop.DragAndDropEvent): Boolean {
+                            val e = event.toAndroidDragEvent()
+                            val clip = e.clipData ?: return false
+                            val permissions = requestDragAndDropPermissions(e)
+                            val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+                            // From the window to the page view's own coordinates.
+                            val at = IntArray(2).also { view.getLocationInWindow(it) }
+                            val x = e.x - at[0]; val y = e.y - at[1]
+                            lifecycleScope.launch {
+                                uris.forEach { insertImage(it, x, y) }
+                                permissions?.release()
+                            }
+                            return uris.isNotEmpty()
+                        }
+                    }
+                }
+                Box(
+                    Modifier.fillMaxSize().dragAndDropTarget(
+                        shouldStartDragAndDrop = { ev -> ev.mimeTypes().any { it.startsWith("image/") } },
+                        target = dropTarget,
+                    ),
+                ) {
                     Column(Modifier.fillMaxSize()) {
                         NotebookHeader(ui, title, onBack = ::finish, onSearch = ::search, onHit = ::showHit, onChange = { changed(); scheduleSave() }, onPaste = ::paste)
                         Row(Modifier.fillMaxWidth().weight(1f)) {
                             Box(Modifier.fillMaxHeight().weight(1f)) {
                                 AndroidView({ stack }, Modifier.fillMaxSize())
-                                NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo)
+                                NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo, onInsert = ::insertFrom)
                                 if (ui.searching) Box(Modifier.align(Alignment.TopEnd).padding(end = 8.dp)) { SearchResults(ui, ::showHit) }
                             }
                             // Beside the page, not over it: the page narrows to make room.
@@ -121,6 +132,19 @@ class NotebookActivity : ComponentActivity() {
                         }
                     }
                     if (ui.addingPage) AddPageDialog(ui) { style, atEnd -> addPage(style, atEnd); ui.save(prefs()) }
+                    // Taking a photo to insert.
+                    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+                        val f = cameraFile
+                        if (ok && f != null) lifecycleScope.launch { insertImage(androidx.core.content.FileProvider.getUriForFile(this@NotebookActivity, "$packageName.files", f)) }
+                    }
+                    LaunchedEffect(ui.takingPhoto) {
+                        if (ui.takingPhoto) {
+                            ui.takingPhoto = false
+                            val f = java.io.File(java.io.File(cacheDir, "exports").apply { mkdirs() }, "photo-${System.currentTimeMillis()}.jpg")
+                            cameraFile = f
+                            camera.launch(androidx.core.content.FileProvider.getUriForFile(this@NotebookActivity, "$packageName.files", f))
+                        }
+                    }
                     // Picking an image to insert.
                     val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let { lifecycleScope.launch { insertImage(it) } } }
                     LaunchedEffect(ui.pickingImage) {
@@ -329,6 +353,17 @@ class NotebookActivity : ComponentActivity() {
         if (!placed) Toast.makeText(this, "Couldn't read that image", Toast.LENGTH_SHORT).show()
     }
 
+    private var cameraFile: java.io.File? = null
+
+    /** The toolbar's + menu. */
+    private fun insertFrom(what: String) {
+        when (what) {
+            "image" -> ui.pickingImage = true
+            "camera" -> ui.takingPhoto = true
+            "paste" -> paste()
+        }
+    }
+
     /** Pastes an image from the clipboard (a screenshot, or one copied here or in another app). */
     private fun paste() = paste(null, null)
 
@@ -502,6 +537,7 @@ class ToolbarState {
     var pageStyle by mutableStateOf(PageStyle.DOTS)
     var searching by mutableStateOf(false)
     var pickingImage by mutableStateOf(false)
+    var takingPhoto by mutableStateOf(false)
     /** Something is selected (an image, or a lasso group). */
     var imageSelected by mutableStateOf(false)
     var groupSelected by mutableStateOf(false)

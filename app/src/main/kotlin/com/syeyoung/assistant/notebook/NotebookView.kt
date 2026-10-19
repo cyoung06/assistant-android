@@ -788,7 +788,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         grabbed = null
     }
 
-    /** What the lasso went around: strokes mostly inside it, images whose middle is; a pen tap picks the stroke or image there. */
+    /** What the lasso touched (went around or crossed); a pen tap picks the stroke there. */
     private fun finishLasso(e: MotionEvent) {
         val pts = lassoPoints.toList()
         lasso = null
@@ -813,15 +813,39 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             }
             return c
         }
+        // Whether segment a-b crosses any edge of the lasso.
+        fun crosses(ax: Float, ay: Float, bx: Float, by: Float): Boolean {
+            fun side(px: Float, py: Float, qx: Float, qy: Float, rx: Float, ry: Float) = (qx - px) * (ry - py) - (qy - py) * (rx - px)
+            var j = poly.size - 1
+            for (i in poly.indices) {
+                val cx = poly[j][0]; val cy = poly[j][1]; val dx = poly[i][0]; val dy = poly[i][1]
+                if (side(ax, ay, bx, by, cx, cy) * side(ax, ay, bx, by, dx, dy) < 0 && side(cx, cy, dx, dy, ax, ay) * side(cx, cy, dx, dy, bx, by) < 0) return true
+                j = i
+            }
+            return false
+        }
+        // Anything the lasso touches: a stroke with any point inside it or crossed by it; an image overlapping it.
         val picked = strokes.filter { s ->
             s.page == page && run {
                 val inputs = s.stroke.inputs
-                var n = 0
-                for (k in 0 until inputs.size) { val p = inputs[k]; if (inside(p.x, p.y)) n++ }
-                inputs.size > 0 && n >= inputs.size * 0.6f
+                var px = Float.NaN; var py = Float.NaN
+                for (k in 0 until inputs.size) {
+                    val p = inputs[k]
+                    if (inside(p.x, p.y) || (!px.isNaN() && crosses(px, py, p.x, p.y))) return@run true
+                    px = p.x; py = p.y
+                }
+                false
             }
         }.map { it.id }.toSet()
-        val pickedImages = images.filter { it.page == page && inside(it.rect.centerX(), it.rect.centerY()) }.map { it.id }.toSet()
+        val pickedImages = images.filter { img ->
+            val r = img.rect
+            img.page == page && (
+                inside(r.left, r.top) || inside(r.right, r.top) || inside(r.right, r.bottom) || inside(r.left, r.bottom) ||
+                    poly.any { r.contains(it[0], it[1]) } ||
+                    crosses(r.left, r.top, r.right, r.top) || crosses(r.right, r.top, r.right, r.bottom) ||
+                    crosses(r.right, r.bottom, r.left, r.bottom) || crosses(r.left, r.bottom, r.left, r.top)
+                )
+        }.map { it.id }.toSet()
         when {
             picked.isEmpty() && pickedImages.size == 1 -> selectedImage = images.first { it.id in pickedImages }
             picked.isNotEmpty() || pickedImages.isNotEmpty() -> group = Group(page, picked, pickedImages)
