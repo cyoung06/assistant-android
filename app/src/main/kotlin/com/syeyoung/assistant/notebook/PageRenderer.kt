@@ -42,7 +42,7 @@ class PageRenderer {
         thread.execute {
             val r = renderer ?: return@execute
             if (gen != generation || page >= r.pageCount || width <= 0 || height <= 0) return@execute
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { density = Bitmap.DENSITY_NONE }
             bitmap.eraseColor(Color.WHITE)
             runCatching { r.openPage(page).use { it.render(bitmap, null, pageToBitmap, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY) } }
             main.post { if (gen == generation) done(bitmap) else bitmap.recycle() }

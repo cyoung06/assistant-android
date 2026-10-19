@@ -237,6 +237,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     /** The visible part of a page, rendered sharp at the current zoom. */
     private class Sharp(val page: Int, val bitmap: Bitmap, val zoom: Float, val left: Float, val top: Float, val scrollX: Float, val scrollY: Float)
     private val sharp = HashMap<Int, Sharp>()
+    private val sharpRect = RectF()
 
     override fun onDraw(canvas: Canvas) = drawPages(canvas)
 
@@ -251,7 +252,12 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             val base = pageBitmaps[i]
             if (base != null) canvas.drawBitmap(base, null, r, bitmapPaint) else requestPage(i)
             sharp[i]?.takeIf { abs(it.zoom - zoom) < 0.001f }?.let { s ->
-                canvas.drawBitmap(s.bitmap, s.left - (scrollXf - s.scrollX), s.top - (scrollYf - s.scrollY), null)
+                // Into an exact rectangle: drawBitmap(x, y) may rescale by screen density, which put
+                // the sharp render off from the page and made it jump when it appeared.
+                val x = s.left - (scrollXf - s.scrollX)
+                val y = s.top - (scrollYf - s.scrollY)
+                sharpRect.set(x, y, x + s.bitmap.width, y + s.bitmap.height)
+                canvas.drawBitmap(s.bitmap, null, sharpRect, null)
             }
             canvas.save()
             canvas.clipRect(r)
