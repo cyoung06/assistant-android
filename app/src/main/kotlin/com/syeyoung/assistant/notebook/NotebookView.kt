@@ -53,6 +53,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     // ---- content ----
     private var sizes: List<SizeF> = emptyList()
     val pageCount get() = sizes.size
+    fun pageSize(i: Int): SizeF? = sizes.getOrNull(i)
     private val strokes = mutableListOf<InkStroke>()
     private val undo = ArrayDeque<InkChange>()
     private val redo = ArrayDeque<InkChange>()
@@ -226,7 +227,10 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             }
             canvas.save()
             canvas.clipRect(r)
+            // The renderer doesn't place strokes itself: the canvas maps page points to the screen,
+            // and the same matrix is passed so it draws at the right resolution.
             pageMatrix(i, drawMatrix)
+            canvas.concat(drawMatrix)
             for (s in strokes) if (s.page == i) strokeRenderer.draw(canvas, s.stroke, drawMatrix)
             canvas.restore()
         }
@@ -315,6 +319,13 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 else -> Gesture.FINGERS
             }
             if (gesture == Gesture.PEN || gesture == Gesture.ERASE) requestUnbufferedDispatch(e)
+        }
+        // Pressing the S Pen's button mid-stroke ends the stroke and erases from there.
+        if (gesture == Gesture.PEN && e.actionMasked == MotionEvent.ACTION_MOVE && (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) {
+            strokeId?.let { id -> if (e.findPointerIndex(penPointer) >= 0) ink.finishStroke(e, penPointer, id) }
+            strokeId = null
+            gesture = Gesture.ERASE
+            erasedNow.clear()
         }
         when (gesture) {
             Gesture.PEN -> pen(e)

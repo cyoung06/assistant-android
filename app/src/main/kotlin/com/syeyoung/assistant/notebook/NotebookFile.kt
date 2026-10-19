@@ -20,6 +20,9 @@ import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitDestination
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Locale
@@ -40,9 +43,12 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
         private val INK_LIST = COSName.getPDFName("InkList")
         private val CA = COSName.getPDFName("CA")
         private val LOWER_CA = COSName.getPDFName("ca")
+        private val BOOKMARK = COSName.getPDFName("AssistantBookmark")
 
-        /** Opens [uri]: its strokes, with the base written to a working file. */
-        fun open(context: Context, uri: Uri, nextId: () -> Long): Pair<NotebookFile, List<InkStroke>> {
+        class Opened(val file: NotebookFile, val strokes: List<InkStroke>, val bookmarks: Set<Int>)
+
+        /** Opens [uri]: its strokes and bookmarked pages, with the base written to a working file. */
+        fun open(context: Context, uri: Uri, nextId: () -> Long): Opened {
             PDFBoxResourceLoader.init(context.applicationContext)
             val dir = File(context.cacheDir, "notebook").apply { mkdirs() }
             val original = File(dir, "original.pdf")
@@ -69,17 +75,39 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
                         // (A stroke that can't be read back stays out of the base, so it isn't drawn twice.)
                     }
                 }
+                val bookmarks = takeBookmarks(doc)
                 doc.save(base)
+                original.delete()
+                return Opened(NotebookFile(context, uri, base), strokes, bookmarks)
             }
-            original.delete()
-            return NotebookFile(context, uri, base) to strokes
+        }
+
+        /**
+         * Our bookmarks are entries in the PDF's outline (what readers list as bookmarks), marked as
+         * ours; they're taken out of the base (and written back on save), the PDF's own stay.
+         */
+        private fun takeBookmarks(doc: PDDocument): Set<Int> {
+            val outline = doc.documentCatalog.documentOutline ?: return emptySet()
+            val items = outline.children().toList()
+            val ours = items.filter { it.cosObject.getBoolean(BOOKMARK, false) }
+            if (ours.isEmpty()) return emptySet()
+            val pages = ours.mapNotNull { item -> runCatching { item.findDestinationPage(doc) }.getOrNull()?.let { doc.pages.indexOf(it) }?.takeIf { it >= 0 } }.toSet()
+            // Rebuild the outline without them (items can only be added when unlinked).
+            val kept = items - ours.toSet()
+            val fresh = PDDocumentOutline()
+            kept.forEach { item ->
+                listOf(COSName.PREV, COSName.NEXT, COSName.PARENT).forEach { item.cosObject.removeItem(it) }
+                fresh.addLast(item)
+            }
+            doc.documentCatalog.documentOutline = if (kept.isEmpty()) null else fresh
+            return pages
         }
 
         private fun load(file: File): PDDocument = PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly())
     }
 
-    /** Writes the base plus [strokes] to the notebook's file (checked to be a readable PDF first). */
-    fun save(strokes: List<InkStroke>) {
+    /** Writes the base plus [strokes] and [bookmarks] to the notebook's file (checked to be a readable PDF first). */
+    fun save(strokes: List<InkStroke>, bookmarks: Set<Int>) {
         val out = File(base.parentFile, "save.pdf")
         var pageCount = 0
         load(base).use { doc ->
@@ -89,6 +117,17 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
                 val page = pages.getOrNull(index) ?: return@forEach
                 val annots = (page.cosObject.getDictionaryObject(COSName.ANNOTS) as? COSArray) ?: COSArray().also { page.cosObject.setItem(COSName.ANNOTS, it) }
                 list.forEach { s -> annotation(doc, page, s)?.let { annots.add(it) } }
+            }
+            if (bookmarks.isNotEmpty()) {
+                val outline = doc.documentCatalog.documentOutline ?: PDDocumentOutline().also { doc.documentCatalog.documentOutline = it }
+                bookmarks.sorted().forEach { i ->
+                    val page = pages.getOrNull(i) ?: return@forEach
+                    outline.addLast(PDOutlineItem().apply {
+                        title = "Page ${i + 1}"
+                        destination = PDPageFitDestination().apply { setPage(page) }
+                        cosObject.setBoolean(BOOKMARK, true)
+                    })
+                }
             }
             doc.save(out)
         }

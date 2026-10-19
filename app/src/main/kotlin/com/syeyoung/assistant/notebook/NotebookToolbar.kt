@@ -21,14 +21,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,7 +43,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
 /** The screen edge the toolbar sits on; on the left or right it runs vertically. */
@@ -60,7 +54,7 @@ private val ITEM = 28.dp
 /**
  * A thin floating toolbar: drag it by its grip to any edge (it snaps there and turns to fit), tap
  * the grip to fold it to a small handle. Pen, highlighter, eraser; colours and sizes for the
- * current tool; undo and redo; the page number (tap to jump); add a page; more.
+ * current tool; undo and redo. (Pages and the rest are in the header.)
  */
 @Composable
 fun NotebookToolbar(
@@ -68,10 +62,6 @@ fun NotebookToolbar(
     onChange: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
-    onAddPage: () -> Unit,
-    onDeletePage: () -> Unit,
-    onJump: () -> Unit,
-    onClose: () -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
@@ -139,15 +129,6 @@ fun NotebookToolbar(
                     Divider(vertical)
                     IconItem(Icons.AutoMirrored.Filled.Undo, "Undo", ui.canUndo, onUndo)
                     IconItem(Icons.AutoMirrored.Filled.Redo, "Redo", ui.canRedo, onRedo)
-                    Divider(vertical)
-                    Text(
-                        if (ui.pages == 0) "…" else "${ui.page + 1}/${ui.pages}",
-                        Modifier.clip(RoundedCornerShape(6.dp)).clickable(onClick = onJump).padding(horizontal = 6.dp, vertical = 4.dp),
-                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    IconItem(Icons.Filled.Add, "Add a page after this one", true, onAddPage)
-                    if (ui.status.isNotEmpty()) Text(ui.status, Modifier.padding(horizontal = 4.dp), fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
-                    More(ui, onChange, onDeletePage, onClose)
                 }
             }
             if (vertical) Column(Modifier.padding(vertical = 2.dp).width(BAR), horizontalAlignment = Alignment.CenterHorizontally) { content() }
@@ -223,22 +204,6 @@ private fun Sizes(ui: ToolbarState, onChange: () -> Unit) {
         ) {
             // A dot as big as the line it draws, relatively: hairline to thick.
             Box(Modifier.size((2 + i * (if (hl) 4 else 2)).dp).clip(CircleShape).background(ink))
-        }
-    }
-}
-
-@Composable
-private fun More(ui: ToolbarState, onChange: () -> Unit, onDeletePage: () -> Unit, onClose: () -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        IconItem(Icons.Filled.MoreVert, "More", true) { open = true }
-        DropdownMenu(open, { open = false }) {
-            DropdownMenuItem(
-                { Text(if (ui.mode == ScrollMode.PAGED) "Scroll continuously" else "Turn page by page") },
-                { ui.mode = if (ui.mode == ScrollMode.PAGED) ScrollMode.CONTINUOUS else ScrollMode.PAGED; open = false; onChange() },
-            )
-            DropdownMenuItem({ Text("Delete this page") }, { open = false; onDeletePage() }, enabled = ui.pages > 1)
-            DropdownMenuItem({ Text("Close") }, { open = false; onClose() })
         }
     }
 }

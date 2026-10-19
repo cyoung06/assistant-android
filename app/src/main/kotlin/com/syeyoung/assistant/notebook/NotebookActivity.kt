@@ -11,6 +11,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +47,7 @@ import kotlin.math.roundToInt
  * and a slim toolbar can be dragged to any edge. The writing is saved into the PDF as you go.
  */
 class NotebookActivity : ComponentActivity() {
+    private var title = ""
     private lateinit var view: NotebookView
     private val renderer = PageRenderer()
     private var file: NotebookFile? = null
@@ -57,6 +60,7 @@ class NotebookActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val uri = intent.data ?: return finish()
         Notebooks.remember(this, uri)
+        title = Notebooks.name(this, uri)
         ui.load(prefs())
 
         val ink = InProgressStrokesView(this)
@@ -73,18 +77,16 @@ class NotebookActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+                val changed = { ui.applyTo(view); ui.save(prefs()) }
                 Box(Modifier.fillMaxSize()) {
-                    AndroidView({ stack }, Modifier.fillMaxSize())
-                    NotebookToolbar(
-                        ui,
-                        onChange = { ui.applyTo(view); ui.save(prefs()) },
-                        onUndo = view::undo,
-                        onRedo = view::redo,
-                        onAddPage = ::addPage,
-                        onDeletePage = { ui.confirmDelete = true },
-                        onJump = { ui.jumping = true },
-                        onClose = ::finish,
-                    )
+                    Column(Modifier.fillMaxSize()) {
+                        NotebookHeader(ui, title, onBack = ::finish, onAddPage = ::addPage, onChange = { changed(); scheduleSave() })
+                        Box(Modifier.fillMaxWidth().weight(1f)) {
+                            AndroidView({ stack }, Modifier.fillMaxSize())
+                            NotebookToolbar(ui, onChange = changed, onUndo = view::undo, onRedo = view::redo)
+                        }
+                    }
+                    if (ui.browsing) PageBrowser(ui, ::thumbnail, onGo = { view.goTo(it, animate = false) }, onChange = { scheduleSave() })
                     Dialogs()
                 }
             }
@@ -94,12 +96,13 @@ class NotebookActivity : ComponentActivity() {
             ui.status = "Opening…"
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val (f, strokes) = NotebookFile.open(this@NotebookActivity, uri) { InkIds.next() }
-                    Triple(f, strokes, renderer.open(f.base))
+                    val opened = NotebookFile.open(this@NotebookActivity, uri) { InkIds.next() }
+                    opened to renderer.open(opened.file.base)
                 }
-            }.onSuccess { (f, strokes, sizes) ->
-                file = f
-                view.setDocument(sizes, strokes)
+            }.onSuccess { (opened, sizes) ->
+                file = opened.file
+                ui.bookmarks = opened.bookmarks
+                view.setDocument(sizes, opened.strokes)
                 ui.status = ""
             }.onFailure { e ->
                 Toast.makeText(this@NotebookActivity, "Couldn't open this PDF: ${e.message}", Toast.LENGTH_LONG).show()
@@ -158,9 +161,10 @@ class NotebookActivity : ComponentActivity() {
         val f = file ?: return
         if (!dirty) return
         val strokes = view.strokesSnapshot()
+        val bookmarks = ui.bookmarks
         dirty = false
         ui.status = "Saving…"
-        val result = withContext(Dispatchers.IO) { io.withLock { runCatching { f.save(strokes) } } }
+        val result = withContext(Dispatchers.IO) { io.withLock { runCatching { f.save(strokes, bookmarks) } } }
         result.onSuccess { ui.status = "" }.onFailure { e ->
             dirty = true
             ui.status = "Not saved"
@@ -187,8 +191,19 @@ class NotebookActivity : ComponentActivity() {
             val sizes = runCatching { withContext(Dispatchers.IO) { io.withLock { change(f); renderer.open(f.base) } } }
                 .getOrElse { e -> Toast.makeText(this@NotebookActivity, "Couldn't change pages: ${e.message}", Toast.LENGTH_LONG).show(); return@launch }
             view.pagesChanged(sizes, moved)
+            ui.bookmarks = ui.bookmarks.mapNotNull(moved).toSet()
             view.goTo(land.coerceIn(0, sizes.size - 1))
             scheduleSave(now = true)
+        }
+    }
+
+    /** A small picture of page [i] for the page browser. */
+    private suspend fun thumbnail(i: Int): android.graphics.Bitmap? {
+        val size = view.pageSize(i) ?: return null
+        val w = (180 * resources.displayMetrics.density).toInt()
+        val scale = w / size.width
+        return kotlinx.coroutines.suspendCancellableCoroutine { c ->
+            renderer.render(i, w, (size.height * scale).toInt(), android.graphics.Matrix().apply { setScale(scale, scale) }) { if (c.isActive) c.resumeWith(Result.success(it)) }
         }
     }
 
@@ -222,6 +237,8 @@ class ToolbarState {
     var status by mutableStateOf("")
     var confirmDelete by mutableStateOf(false)
     var jumping by mutableStateOf(false)
+    var browsing by mutableStateOf(false)
+    var bookmarks by mutableStateOf<Set<Int>>(emptySet())
     var needsCopy by mutableStateOf(false)
 
     fun applyTo(v: NotebookView) {
