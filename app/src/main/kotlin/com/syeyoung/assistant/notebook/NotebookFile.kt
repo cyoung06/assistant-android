@@ -109,9 +109,26 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
     /** Writes the base plus [strokes] and [bookmarks] to the notebook's file (checked to be a readable PDF first). */
     fun save(strokes: List<InkStroke>, bookmarks: Set<Int>) {
         val out = File(base.parentFile, "save.pdf")
+        val pageCount = write(strokes, bookmarks, out)
+        PdfRenderer(ParcelFileDescriptor.open(out, ParcelFileDescriptor.MODE_READ_ONLY)).use {
+            check(it.pageCount == pageCount) { "the saved PDF came out wrong (${it.pageCount} of $pageCount pages); the original is untouched" }
+        }
+        context.contentResolver.openOutputStream(uri, "wt")!!.use { o -> out.inputStream().use { it.copyTo(o) } }
+        out.delete()
+    }
+
+    /** Just [pages] (with their writing) as a PDF of their own, for sharing or printing. */
+    fun export(strokes: List<InkStroke>, pages: Set<Int>, out: File) {
+        write(strokes.filter { it.page in pages }, emptySet(), out, keep = pages)
+    }
+
+    /** Deletes [indices] (several pages at once). */
+    fun deletePages(indices: Set<Int>) = edit { doc -> indices.sortedDescending().forEach { if (it < doc.numberOfPages) doc.removePage(it) } }
+
+    /** The base plus [strokes] and [bookmarks], to [out]; only the pages in [keep] if given. Returns the page count. */
+    private fun write(strokes: List<InkStroke>, bookmarks: Set<Int>, out: File, keep: Set<Int>? = null): Int {
         var pageCount = 0
         load(base).use { doc ->
-            pageCount = doc.numberOfPages
             val pages = doc.pages.toList()
             strokes.groupBy { it.page }.forEach { (index, list) ->
                 val page = pages.getOrNull(index) ?: return@forEach
@@ -129,13 +146,11 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
                     })
                 }
             }
+            if (keep != null) (pages.size - 1 downTo 0).forEach { if (it !in keep) doc.removePage(it) }
+            pageCount = doc.numberOfPages
             doc.save(out)
         }
-        PdfRenderer(ParcelFileDescriptor.open(out, ParcelFileDescriptor.MODE_READ_ONLY)).use {
-            check(it.pageCount == pageCount) { "the saved PDF came out wrong (${it.pageCount} of $pageCount pages); the original is untouched" }
-        }
-        context.contentResolver.openOutputStream(uri, "wt")!!.use { o -> out.inputStream().use { it.copyTo(o) } }
-        out.delete()
+        return pageCount
     }
 
     /** Inserts a page in [style], the size of page [ref], after page [after] (-1 puts it first). */

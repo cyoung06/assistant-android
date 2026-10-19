@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files the app hands to other apps (exported pages, to share or print). -->
+<paths>
+    <cache-path name="exports" path="exports/" />
+</paths>

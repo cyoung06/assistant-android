@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -162,19 +163,19 @@ fun AddPageDialog(ui: ToolbarState, onAdd: (PageStyle, atEnd: Boolean) -> Unit) 
     var style by remember { mutableStateOf(ui.pageStyle) }
     var atEnd by remember { mutableStateOf(false) }
     androidx.compose.material3.AlertDialog(
-        onDismissRequest = { ui.addingPage = false },
+        onDismissRequest = { ui.addingPage = false; ui.addAfter = null },
         title = { Text("New page") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 StylePicker(style) { style = it }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(!atEnd, { atEnd = false }, { Text("After page ${ui.page + 1}") })
+                    FilterChip(!atEnd, { atEnd = false }, { Text("After page ${(ui.addAfter ?: ui.page) + 1}") })
                     FilterChip(atEnd, { atEnd = true }, { Text("At the end") })
                 }
             }
         },
         confirmButton = { androidx.compose.material3.TextButton({ ui.addingPage = false; ui.pageStyle = style; onAdd(style, atEnd) }) { Text("Add page") } },
-        dismissButton = { androidx.compose.material3.TextButton({ ui.addingPage = false }) { Text("Cancel") } },
+        dismissButton = { androidx.compose.material3.TextButton({ ui.addingPage = false; ui.addAfter = null }) { Text("Cancel") } },
     )
 }
 
@@ -206,13 +207,24 @@ fun StylePicker(selected: PageStyle, onPick: (PageStyle) -> Unit) {
     }
 }
 
+/** What the page sidebar can do to pages. */
+interface PageActions {
+    fun go(page: Int)
+    fun addAfter(page: Int)
+    fun delete(pages: Set<Int>)
+    fun export(pages: Set<Int>)
+    fun print(pages: Set<Int>)
+}
+
 /**
  * The page sidebar (Noteshelf-style quick pages): a column of thumbnails down the right side that
- * scrolls on its own; tap one to go there. It follows the page on screen, and stays open while
- * writing.
+ * scrolls on its own; tap one to go there, its star to bookmark it, long-press for more (add a page
+ * after it, delete it, select pages). Selected pages can be exported, printed or deleted together.
+ * It follows the page on screen.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun PageSidebar(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, onGo: (Int) -> Unit, onAll: () -> Unit, onChange: () -> Unit) {
+fun PageSidebar(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, actions: PageActions, onAll: () -> Unit, onChange: () -> Unit) {
     val list = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(Unit) { list.scrollToItem((ui.page - 1).coerceAtLeast(0)) }
     // Keep the page on screen in view as it changes.
@@ -220,40 +232,104 @@ fun PageSidebar(ui: ToolbarState, thumbnail: suspend (Int) -> Bitmap?, onGo: (In
         val visible = list.layoutInfo.visibleItemsInfo.map { it.index }
         if (ui.page !in visible) list.animateScrollToItem((ui.page - 1).coerceAtLeast(0))
     }
-    Surface(Modifier.width(225.dp).fillMaxHeight(), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 2.dp) {
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var confirmDelete by remember { mutableStateOf<Set<Int>?>(null) }
+    LaunchedEffect(ui.pages) { selected = selected.filter { it < ui.pages }.toSet() }
+
+    Surface(Modifier.width(240.dp).fillMaxHeight(), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 2.dp) {
         Column {
-            Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("${ui.pages} pages", Modifier.weight(1f), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                IconButton({ ui.quickPages = false }) { Icon(Icons.Filled.Close, "Close", Modifier.size(26.dp)) }
+            Row(Modifier.fillMaxWidth().height(52.dp).padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (selecting) {
+                    Text("${selected.size} selected", Modifier.weight(1f), fontSize = 16.sp)
+                    androidx.compose.material3.TextButton({ selected = if (selected.size == ui.pages) emptySet() else (0 until ui.pages).toSet() }) {
+                        Text(if (selected.size == ui.pages) "None" else "All")
+                    }
+                    IconButton({ selecting = false; selected = emptySet() }) { Icon(Icons.Filled.Close, "Stop selecting", Modifier.size(24.dp)) }
+                } else {
+                    Text("${ui.pages} pages", Modifier.weight(1f), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    androidx.compose.material3.TextButton({ selecting = true }) { Text("Select") }
+                    IconButton({ ui.quickPages = false }) { Icon(Icons.Filled.Close, "Close", Modifier.size(24.dp)) }
+                }
             }
             androidx.compose.foundation.lazy.LazyColumn(
                 Modifier.weight(1f), state = list,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 24.dp, end = 24.dp, bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 14.dp, end = 14.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(count = ui.pages, key = { it }) { i ->
                     var bmp by remember(i) { mutableStateOf<Bitmap?>(null) }
+                    var menu by remember { mutableStateOf(false) }
                     LaunchedEffect(i) { bmp = thumbnail(i) }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth().clickable { onGo(i) }) {
-                        Box(
-                            Modifier.fillMaxWidth().aspectRatio(bmp?.let { it.width.toFloat() / it.height } ?: 0.707f).background(Color.White)
-                                .border(if (i == ui.page) 3.dp else 1.dp, if (i == ui.page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-                        ) {
-                            bmp?.let { Image(it.asImageBitmap(), "Page ${i + 1}", Modifier.fillMaxSize()) }
-                            // Tap the star to bookmark (or unbookmark) the page.
-                            val marked = i in ui.bookmarks
-                            Icon(
-                                if (marked) Icons.Filled.Star else Icons.Filled.StarBorder, if (marked) "Remove bookmark" else "Bookmark",
-                                Modifier.align(Alignment.TopEnd).clickable { ui.bookmarks = if (marked) ui.bookmarks - i else ui.bookmarks + i; onChange() }.padding(4.dp).size(24.dp),
-                                tint = if (marked) Color(0xFFF2B600) else Color(0x55000000),
+                    val current = i == ui.page
+                    val chosen = i in selected
+                    // Generous padding around each page, filled when it's the one on screen (or selected).
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .background(
+                                when { chosen -> MaterialTheme.colorScheme.primaryContainer; current && !selecting -> MaterialTheme.colorScheme.secondaryContainer; else -> Color.Transparent },
+                                androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
                             )
+                            .combinedClickable(
+                                onClick = { if (selecting) selected = if (chosen) selected - i else selected + i else actions.go(i) },
+                                onLongClick = { if (selecting) selected = if (chosen) selected - i else selected + i else menu = true },
+                            )
+                            .padding(12.dp),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                            Box(
+                                Modifier.fillMaxWidth().aspectRatio(bmp?.let { it.width.toFloat() / it.height } ?: 0.707f).background(Color.White)
+                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            ) {
+                                bmp?.let { Image(it.asImageBitmap(), "Page ${i + 1}", Modifier.fillMaxSize()) }
+                                if (selecting) {
+                                    androidx.compose.material3.Checkbox(chosen, { selected = if (chosen) selected - i else selected + i }, Modifier.align(Alignment.TopStart))
+                                } else {
+                                    // Tap the star to bookmark (or unbookmark) the page.
+                                    val marked = i in ui.bookmarks
+                                    Icon(
+                                        if (marked) Icons.Filled.Star else Icons.Filled.StarBorder, if (marked) "Remove bookmark" else "Bookmark",
+                                        Modifier.align(Alignment.TopEnd).clickable { ui.bookmarks = if (marked) ui.bookmarks - i else ui.bookmarks + i; onChange() }.padding(4.dp).size(24.dp),
+                                        tint = if (marked) Color(0xFFF2B600) else Color(0x55000000),
+                                    )
+                                }
+                            }
+                            Text("${i + 1}", Modifier.padding(top = 6.dp), fontSize = 14.sp, color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text("${i + 1}", fontSize = 14.sp, color = if (i == ui.page) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        DropdownMenu(menu, { menu = false }) {
+                            DropdownMenuItem({ Text("Add a page after") }, { menu = false; actions.addAfter(i) })
+                            DropdownMenuItem({ Text(if (i in ui.bookmarks) "Remove bookmark" else "Bookmark") }, {
+                                menu = false; ui.bookmarks = if (i in ui.bookmarks) ui.bookmarks - i else ui.bookmarks + i; onChange()
+                            })
+                            DropdownMenuItem({ Text("Export this page") }, { menu = false; actions.export(setOf(i)) })
+                            DropdownMenuItem({ Text("Print this page") }, { menu = false; actions.print(setOf(i)) })
+                            DropdownMenuItem({ Text("Select pages…") }, { menu = false; selecting = true; selected = setOf(i) })
+                            DropdownMenuItem({ Text("Delete page") }, { menu = false; confirmDelete = setOf(i) }, enabled = ui.pages > 1)
+                        }
                     }
                 }
             }
-            androidx.compose.material3.TextButton(onAll, Modifier.fillMaxWidth()) { Text("All pages") }
+            if (selecting) {
+                Row(Modifier.fillMaxWidth().padding(6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    val any = selected.isNotEmpty()
+                    androidx.compose.material3.TextButton({ actions.export(selected) }, enabled = any) { Text("Export") }
+                    androidx.compose.material3.TextButton({ actions.print(selected) }, enabled = any) { Text("Print") }
+                    androidx.compose.material3.TextButton({ confirmDelete = selected }, enabled = any && selected.size < ui.pages) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                }
+            } else {
+                androidx.compose.material3.TextButton(onAll, Modifier.fillMaxWidth()) { Text("All pages") }
+            }
         }
+    }
+
+    confirmDelete?.let { pages ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text(if (pages.size == 1) "Delete page ${pages.first() + 1}?" else "Delete ${pages.size} pages?") },
+            text = { Text("The pages and their writing go. This can't be undone.") },
+            confirmButton = { androidx.compose.material3.TextButton({ confirmDelete = null; actions.delete(pages); selecting = false; selected = emptySet() }) { Text("Delete") } },
+            dismissButton = { androidx.compose.material3.TextButton({ confirmDelete = null }) { Text("Cancel") } },
+        )
     }
 }
 

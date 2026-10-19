@@ -95,7 +95,7 @@ class NotebookActivity : ComponentActivity() {
                                 if (ui.searching) Box(Modifier.align(Alignment.TopEnd).padding(end = 8.dp)) { SearchResults(ui, ::showHit) }
                             }
                             // Beside the page, not over it: the page narrows to make room.
-                            if (ui.quickPages) PageSidebar(ui, ::thumbnail, onGo = { view.goTo(it) }, onAll = { ui.quickPages = false; ui.browsing = true }, onChange = { scheduleSave() })
+                            if (ui.quickPages) PageSidebar(ui, ::thumbnail, pageActions, onAll = { ui.quickPages = false; ui.browsing = true }, onChange = { scheduleSave() })
                         }
                     }
                     if (ui.addingPage) AddPageDialog(ui) { style, atEnd -> addPage(style, atEnd); ui.save(prefs()) }
@@ -198,8 +198,61 @@ class NotebookActivity : ComponentActivity() {
         }
     }
 
+    private val pageActions = object : PageActions {
+        override fun go(page: Int) = view.goTo(page)
+        override fun addAfter(page: Int) { ui.addAfter = page; ui.addingPage = true }
+        override fun delete(pages: Set<Int>) = deletePages(pages)
+        override fun export(pages: Set<Int>) = exportPages(pages) { f -> share(f) }
+        override fun print(pages: Set<Int>) = exportPages(pages) { f -> print(f) }
+    }
+
+    /** Writes [pages] (with their writing) to a PDF of their own, then hands it to [then]. */
+    private fun exportPages(pages: Set<Int>, then: (java.io.File) -> Unit) {
+        val f = file ?: return
+        val strokes = view.strokesSnapshot()
+        lifecycleScope.launch {
+            val dir = java.io.File(cacheDir, "exports").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+            val name = title.removeSuffix(".pdf") + if (pages.size == 1) " p${pages.first() + 1}.pdf" else " (${pages.size} pages).pdf"
+            val out = java.io.File(dir, name.replace('/', '-'))
+            runCatching { withContext(Dispatchers.IO) { io.withLock { f.export(strokes, pages, out) } } }
+                .onSuccess { then(out) }
+                .onFailure { e -> Toast.makeText(this@NotebookActivity, "Couldn't export: ${e.message}", Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    private fun share(f: java.io.File) {
+        val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.files", f)
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).setType("application/pdf")
+            .putExtra(android.content.Intent.EXTRA_STREAM, uri).addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivity(android.content.Intent.createChooser(send, f.name))
+    }
+
+    /** Through Android's print service (printers, or Save as PDF). */
+    private fun print(f: java.io.File) {
+        val pm = getSystemService(android.print.PrintManager::class.java)
+        pm.print(f.name, object : android.print.PrintDocumentAdapter() {
+            override fun onLayout(old: android.print.PrintAttributes?, new: android.print.PrintAttributes, cancel: android.os.CancellationSignal?, cb: LayoutResultCallback, extras: Bundle?) {
+                cb.onLayoutFinished(android.print.PrintDocumentInfo.Builder(f.name).setContentType(android.print.PrintDocumentInfo.CONTENT_TYPE_DOCUMENT).build(), true)
+            }
+            override fun onWrite(pages: Array<out android.print.PageRange>, dest: android.os.ParcelFileDescriptor, cancel: android.os.CancellationSignal?, cb: WriteResultCallback) {
+                runCatching { java.io.FileOutputStream(dest.fileDescriptor).use { o -> f.inputStream().use { it.copyTo(o) } } }
+                    .onSuccess { cb.onWriteFinished(arrayOf(android.print.PageRange.ALL_PAGES)) }
+                    .onFailure { cb.onWriteFailed(it.message) }
+            }
+        }, null)
+    }
+
+    private fun deletePages(pages: Set<Int>) {
+        if (pages.isEmpty() || pages.size >= view.pageCount) return
+        val sorted = pages.sorted()
+        pageEdit({ it.deletePages(pages) }, land = (view.currentPage - sorted.count { it < view.currentPage }).coerceAtLeast(0)) { old ->
+            if (old in pages) null else old - sorted.count { it < old }
+        }
+    }
+
     private fun addPage(style: PageStyle, atEnd: Boolean) {
-        val at = view.currentPage
+        val at = ui.addAfter ?: view.currentPage
+        ui.addAfter = null
         val after = if (atEnd) view.pageCount - 1 else at
         pageEdit({ it.insertPage(after, ref = at, style = style) }, land = after + 1) { old -> if (old > after) old + 1 else old }
     }
@@ -300,6 +353,8 @@ class ToolbarState {
     var browsing by mutableStateOf(false)
     var quickPages by mutableStateOf(false)
     var addingPage by mutableStateOf(false)
+    /** The page a new page goes after, when chosen in the page sidebar (else the current page). */
+    var addAfter by mutableStateOf<Int?>(null)
     var pageStyle by mutableStateOf(PageStyle.DOTS)
     var searching by mutableStateOf(false)
     var query by mutableStateOf("")
