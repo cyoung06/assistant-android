@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -52,11 +53,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.syeyoung.assistant.api.models.AnalyzeRequest
-import com.syeyoung.assistant.api.models.CreateEventRequest
 import com.syeyoung.assistant.api.models.CreateTaskRequest
 import com.syeyoung.assistant.api.models.DueDto
-import com.syeyoung.assistant.api.models.Proposal
+import com.syeyoung.assistant.api.models.SubmitRequest
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.data.dueText
 import com.syeyoung.assistant.data.refMarkdown
@@ -81,8 +80,8 @@ data class Shared(val text: String, val subject: String?, val images: List<Share
 class SharedImage(val uri: Uri, val name: String, val mimeType: String, val bytes: ByteArray, val preview: ImageBitmap?)
 
 /**
- * The share target: a quick task from what was shared, or "Analyze", which has the model propose
- * tasks and events to review before anything is created.
+ * The share target: by default straight to Triage (the model reads it in the background), or a
+ * quick task made right away.
  */
 class CaptureActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -129,7 +128,7 @@ private val URL = Regex("""https?://\S+""")
 private fun CaptureScreen(shared: Shared, onDone: () -> Unit) {
     val context = LocalContext.current
     val repo = Repo.get(context)
-    var mode by remember { mutableStateOf(if (shared.images.isNotEmpty()) 1 else 0) }
+    var mode by remember { mutableStateOf(0) }
 
     LaunchedEffect(Unit) { if (repo.state.value.data.fetchedAt == 0L) repo.refresh() }
 
@@ -144,10 +143,10 @@ private fun CaptureScreen(shared: Shared, onDone: () -> Unit) {
         }
         if (shared.text.isNotBlank()) Text(shared.text.take(500), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            SegmentedButton(mode == 0, { mode = 0 }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("Quick task") }
-            SegmentedButton(mode == 1, { mode = 1 }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("Analyze") }
+            SegmentedButton(mode == 0, { mode = 0 }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("To Triage") }
+            SegmentedButton(mode == 1, { mode = 1 }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("Quick task") }
         }
-        if (mode == 0) QuickTask(shared, onDone) else Analyze(shared, onDone)
+        if (mode == 0) SendToTriage(shared, onDone) else QuickTask(shared, onDone)
     }
 }
 
@@ -202,98 +201,38 @@ private fun QuickTask(shared: Shared, onDone: () -> Unit) {
     ) { Text(if (saving) "Saving…" else "Create task") }
 }
 
-private class Pick(val proposal: Proposal) {
-    var keep by mutableStateOf(true)
-    var title by mutableStateOf(proposal.title)
-}
-
-/** The model reads the screenshots and text and proposes tasks and events; you keep the ones you want. */
+/**
+ * Sends what was shared to Triage and closes: the model reads it in the background and its
+ * suggestions wait in Triage to be accepted.
+ */
 @Composable
-private fun Analyze(shared: Shared, onDone: () -> Unit) {
+private fun SendToTriage(shared: Shared, onDone: () -> Unit) {
     val context = LocalContext.current
     val repo = Repo.get(context)
-    val state by repo.state.collectAsStateCompat()
     val scope = rememberCoroutineScope()
     var note by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var attachmentIds by remember { mutableStateOf<List<UUID>>(emptyList()) }
-    val picks = remember { mutableStateListOf<Pick>() }
-    var analyzed by remember { mutableStateOf(false) }
 
     OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), label = { Text("Anything to add (optional)") })
-    if (!analyzed) {
-        Button(
-            onClick = {
-                busy = true
-                error = null
-                scope.launch {
-                    runCatching {
-                        val api = repo.api()
-                        val ids = attachmentIds.ifEmpty { shared.images.map { api.upload(it.bytes, it.name, it.mimeType).id }.also { attachmentIds = it } }
-                        api.analyze(AnalyzeRequest(attachmentIds = ids, text = listOf(shared.text, note).filter { it.isNotBlank() }.joinToString("\n\n")))
-                    }.onSuccess { r -> picks.clear(); picks.addAll(r.items.map(::Pick)); analyzed = true }.onFailure { error = it.message }
-                    busy = false
-                }
-            },
-            enabled = !busy && (shared.images.isNotEmpty() || shared.text.isNotBlank() || note.isNotBlank()),
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (busy) "Reading…" else "Analyze") }
-    }
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    if (analyzed && picks.isEmpty()) Text("Nothing to track found.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-    picks.forEach { p ->
-        Card(Modifier.fillMaxWidth()) {
-            Row(Modifier.padding(8.dp), verticalAlignment = Alignment.Top) {
-                Checkbox(p.keep, { p.keep = it })
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    OutlinedTextField(p.title, { p.title = it }, Modifier.fillMaxWidth(), singleLine = true)
-                    Text(describe(p.proposal, state.data.projects.find { it.id == p.proposal.projectId }?.name), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (p.proposal.description.isNotBlank()) Text(p.proposal.description, style = MaterialTheme.typography.bodySmall)
-                }
+    Button(
+        onClick = {
+            busy = true
+            error = null
+            scope.launch {
+                runCatching {
+                    val api = repo.api()
+                    val ids = shared.images.map { api.upload(it.bytes, it.name, it.mimeType).id }
+                    val text = listOf(shared.subject.orEmpty(), shared.text, note).filter { it.isNotBlank() }.joinToString("\n\n")
+                    api.triage.submitTriage(SubmitRequest(source = "share", text = text, attachmentIds = ids, title = shared.subject.orEmpty())).value()
+                }.onSuccess {
+                    Toast.makeText(context, "Sent to Triage", Toast.LENGTH_SHORT).show()
+                    onDone()
+                }.onFailure { error = it.message; busy = false }
             }
-        }
-    }
-    if (picks.isNotEmpty()) {
-        val count = picks.count { it.keep }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton({ analyzed = false; picks.clear() }) { Text("Again") }
-            Button(
-                onClick = {
-                    busy = true
-                    scope.launch {
-                        runCatching {
-                            val api = repo.api()
-                            picks.filter { it.keep }.forEachIndexed { i, p ->
-                                val x = p.proposal
-                                if (x.kind == "event") api.createEvent(CreateEventRequest(title = p.title.trim(), notes = x.description, start = x.start, end = x.end, startDate = x.startDate, endDate = x.endDate, projectId = x.projectId))
-                                // The screenshots go with the first task made from them.
-                                else api.createTask(
-                                    CreateTaskRequest(
-                                        title = p.title.trim(), description = x.description, due = x.due, projectId = x.projectId, labelIds = x.labelIds,
-                                        priority = x.priority?.let { pr -> CreateTaskRequest.Priority.entries.find { it.value == pr.value } },
-                                        attachmentIds = if (i == picks.indexOfFirst { it.keep && it.proposal.kind != "event" }) attachmentIds else null,
-                                    ),
-                                )
-                            }
-                            repo.refresh()
-                        }.onSuccess { onDone() }.onFailure { error = it.message; busy = false }
-                    }
-                },
-                enabled = count > 0 && !busy,
-            ) { Text("Create $count") }
-        }
-    }
-}
-
-private fun describe(p: Proposal, project: String?): String {
-    val today = LocalDate.now()
-    val time = DateTimeFormatter.ofPattern("MMM d HH:mm")
-    val whenText = when {
-        p.kind == "event" && p.start != null -> "Event · " + OffsetDateTime.parse(p.start).format(time) + "–" + OffsetDateTime.parse(p.end!!).toLocalTime().toString().take(5)
-        p.kind == "event" && p.startDate != null -> "Event · ${p.startDate} (all day)"
-        p.due != null -> "Task · due " + dueText(p.due!!, today)
-        else -> "Task · no due date"
-    }
-    return listOfNotNull(whenText, project).joinToString(" · ")
+        },
+        enabled = !busy && (shared.images.isNotEmpty() || shared.text.isNotBlank() || note.isNotBlank()),
+        modifier = Modifier.fillMaxWidth(),
+    ) { Text(if (busy) "Sending…" else "Send to Triage") }
 }

@@ -5,6 +5,7 @@ import com.syeyoung.assistant.api.apis.CalendarControllerApi
 import com.syeyoung.assistant.api.apis.CaptureControllerApi
 import com.syeyoung.assistant.api.apis.MailControllerApi
 import com.syeyoung.assistant.api.apis.RefControllerApi
+import com.syeyoung.assistant.api.apis.TriageControllerApi
 import com.syeyoung.assistant.api.apis.TaskControllerApi
 import com.syeyoung.assistant.api.models.AnalyzeRequest
 import com.syeyoung.assistant.api.models.AttachmentInfo
@@ -74,6 +75,7 @@ class Api(endpoint: Endpoint) {
     val capture = CaptureControllerApi(base, engine, config)
     val refs = RefControllerApi(base, engine, config)
     val mail = MailControllerApi(base, engine, config)
+    val triage = TriageControllerApi(base, engine, config)
     private val http = HttpClient(engine, config)
 
     suspend fun patchTask(id: UUID, patch: JsonObject) = send {
