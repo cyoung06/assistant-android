@@ -3,6 +3,7 @@ package com.syeyoung.assistant.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -27,8 +28,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.DismissibleDrawerSheet
-import androidx.compose.material3.DismissibleNavigationDrawer
+import androidx.compose.material3.PermanentDrawerSheet
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -43,7 +46,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -94,10 +96,10 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     var calendarDay by remember { mutableStateOf(LocalDate.now()) }
     val wide = LocalConfiguration.current.screenWidthDp >= 840
     val drawer = rememberDrawerState(DrawerValue.Closed)
-    // On a tablet the drawer sits beside the content; whether it's shown is remembered.
+    // On a tablet the drawer sits beside the content (which takes the width left); whether it's shown is remembered.
     val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
-    val side = rememberDrawerState(if (prefs.getBoolean("sidebarOpen", true)) DrawerValue.Open else DrawerValue.Closed)
-    LaunchedEffect(side) { snapshotFlow { side.currentValue }.collect { prefs.edit().putBoolean("sidebarOpen", it == DrawerValue.Open).apply() } }
+    var sideOpen by remember { mutableStateOf(prefs.getBoolean("sidebarOpen", true)) }
+    val toggleSide = { sideOpen = !sideOpen; prefs.edit().putBoolean("sidebarOpen", sideOpen).apply() }
 
     LaunchedEffect(Unit) { repo.refresh() }
     LaunchedEffect(openTask) { if (openTask != null) detail = openTask }
@@ -175,7 +177,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                 TopAppBar(
                     title = { Text(screen.title) },
                     navigationIcon = {
-                        IconButton({ scope.launch { if (!wide) drawer.open() else if (side.isOpen) side.close() else side.open() } }) { Icon(Icons.Filled.Menu, "Navigation") }
+                        IconButton({ if (wide) toggleSide() else scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, "Navigation") }
                     },
                 )
             },
@@ -227,7 +229,12 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
         }
     }
 
-    if (wide) DismissibleNavigationDrawer(drawerContent = { DismissibleDrawerSheet { nav() } }, drawerState = side, gesturesEnabled = false) { content() }
+    if (wide) {
+        Row(Modifier.fillMaxSize()) {
+            AnimatedVisibility(sideOpen, enter = expandHorizontally(), exit = shrinkHorizontally()) { PermanentDrawerSheet { nav() } }
+            Box(Modifier.weight(1f)) { content() }
+        }
+    }
     else ModalNavigationDrawer(drawerContent = { ModalDrawerSheet { nav() } }, drawerState = drawer) { content() }
 
     if (creating) CreateTaskSheet((screen as? Screen.Project)?.id) { creating = false }
