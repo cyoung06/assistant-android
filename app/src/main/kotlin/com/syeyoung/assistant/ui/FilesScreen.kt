@@ -284,8 +284,10 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
     val locked = DriveProvider.readOnly(path)
     /** Puts what was dropped into [folder], then shows it everywhere. */
     val drop = { folder: String, event: androidx.compose.ui.draganddrop.DragAndDropEvent ->
+        // Read now: the event is recycled once the drop returns.
+        val dropped = Dropped.of(context, event)
         scope.launch {
-            runCatching { dropInto(context, repo, folder, event) }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }
+            runCatching { dropInto(context, repo, folder, dropped) }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }
             FilesNav.changes++
         }
         Unit
@@ -797,14 +799,16 @@ private fun Modifier.driveGestures(onTap: () -> Unit, onMenu: () -> Unit, onDrag
     })
 }
 
-/** Starts a system drag of [e]: its URI (so other apps can take it) and what to do with it here. */
+/** Starts a drag of [e] to another pane or folder here: what to do with it, and its URI. */
 private fun startDriveDrag(view: android.view.View, context: Context, e: DriveEntry, copy: Boolean) {
     // Course files from PLMS stay where they are: dragging one copies it.
     val asCopy = copy || DriveProvider.readOnly(e.path)
     val item = android.content.ClipData.Item("$DRAG_PREFIX${if (asCopy) "copy" else "move"}:${e.path}", null, DriveProvider.uri(context, e.path))
     val clip = android.content.ClipData(e.name, arrayOf(if (e.folder) DriveProvider.mimeOf(e.name, true) else (e.contentType ?: DriveProvider.mimeOf(e.name, false)), android.content.ClipDescription.MIMETYPE_TEXT_PLAIN), item)
     val label = (if (asCopy) "Copy " else "Move ") + e.name
-    view.startDragAndDrop(clip, LabelShadow(view, label), null, android.view.View.DRAG_FLAG_GLOBAL or android.view.View.DRAG_FLAG_GLOBAL_URI_READ)
+    // Within the app only: a global drag is taken over by the system's split-screen drop zones
+    // (on Samsung tablets), and the panes here never learn where it was dropped.
+    view.startDragAndDrop(clip, LabelShadow(view, label), null, 0)
 }
 
 /** The drag shadow: a chip saying what's being copied or moved. */
@@ -834,44 +838,52 @@ private suspend fun newNote(repo: Repo, folder: String): String {
 
 /** Takes drops (drive entries, or files from other apps) into a folder; [locked] folders take none. */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
-private fun Modifier.driveDropTarget(locked: Boolean, onHover: (Boolean) -> Unit = {}, onDrop: (androidx.compose.ui.draganddrop.DragAndDropEvent) -> Unit): Modifier =
-    if (locked) this else this.then(
-        Modifier.dragAndDropTarget(
-            shouldStartDragAndDrop = { true },
-            target = object : androidx.compose.ui.draganddrop.DragAndDropTarget {
-                override fun onEntered(event: androidx.compose.ui.draganddrop.DragAndDropEvent) = onHover(true)
-                override fun onExited(event: androidx.compose.ui.draganddrop.DragAndDropEvent) = onHover(false)
-                override fun onEnded(event: androidx.compose.ui.draganddrop.DragAndDropEvent) = onHover(false)
-                override fun onDrop(event: androidx.compose.ui.draganddrop.DragAndDropEvent): Boolean { onHover(false); onDrop(event); return true }
-            },
-        ),
-    )
+@Composable
+private fun Modifier.driveDropTarget(locked: Boolean, onHover: (Boolean) -> Unit = {}, onDrop: (androidx.compose.ui.draganddrop.DragAndDropEvent) -> Unit): Modifier {
+    // The same target for the whole drag (a new one, as hovering recomposes, never gets the drop).
+    val hover by androidx.compose.runtime.rememberUpdatedState(onHover)
+    val drop by androidx.compose.runtime.rememberUpdatedState(onDrop)
+    val target = remember {
+        object : androidx.compose.ui.draganddrop.DragAndDropTarget {
+            override fun onEntered(event: androidx.compose.ui.draganddrop.DragAndDropEvent) = hover(true)
+            override fun onExited(event: androidx.compose.ui.draganddrop.DragAndDropEvent) = hover(false)
+            override fun onEnded(event: androidx.compose.ui.draganddrop.DragAndDropEvent) = hover(false)
+            override fun onDrop(event: androidx.compose.ui.draganddrop.DragAndDropEvent): Boolean { hover(false); drop(event); return true }
+        }
+    }
+    return if (locked) this else this.then(Modifier.dragAndDropTarget(shouldStartDragAndDrop = { true }, target = target))
+}
+
+/** What was dropped: our entries ("copy"/"move" and their paths), or other apps' files with leave to read them. */
+private class Dropped(val ours: List<String>, val uris: List<Uri>, val permissions: android.view.DragAndDropPermissions?) {
+    companion object {
+        fun of(context: Context, event: androidx.compose.ui.draganddrop.DragAndDropEvent): Dropped {
+            val e = event.toAndroidDragEvent()
+            val items = e.clipData?.let { clip -> (0 until clip.itemCount).map { clip.getItemAt(it) } }.orEmpty()
+            val ours = items.mapNotNull { it.text?.toString()?.takeIf { t -> t.startsWith(DRAG_PREFIX) } }
+            if (ours.isNotEmpty()) return Dropped(ours, emptyList(), null)
+            return Dropped(emptyList(), items.mapNotNull { it.uri }, (context as? android.app.Activity)?.requestDragAndDropPermissions(e))
+        }
+    }
+}
 
 /** Puts a drop into [folder]: a drive entry moved or copied (as dragged), or other apps' files uploaded. */
-private suspend fun dropInto(context: Context, repo: Repo, folder: String, event: androidx.compose.ui.draganddrop.DragAndDropEvent) {
-    val e = event.toAndroidDragEvent()
-    val clip = e.clipData ?: return
-    val items = (0 until clip.itemCount).map { clip.getItemAt(it) }
-    val ours = items.mapNotNull { it.text?.toString()?.takeIf { t -> t.startsWith(DRAG_PREFIX) } }
-    if (ours.isNotEmpty()) {
-        for (t in ours) {
-            val (mode, path) = t.removePrefix(DRAG_PREFIX).split(':', limit = 2)
-            val isFolder = path.endsWith("/")
-            val name = path.trimEnd('/').substringAfterLast('/')
-            val to = folder + name + if (isFolder) "/" else ""
-            if (folder.startsWith(path)) continue // Into itself.
-            if (mode == "move") {
-                if (path.trimEnd('/').substringBeforeLast('/') + "/" == folder) continue // Already here.
-                repo.api().driveMove(path, to)
-            } else repo.api().driveCopy(path, to)
-        }
-        return
+private suspend fun dropInto(context: Context, repo: Repo, folder: String, dropped: Dropped) {
+    for (t in dropped.ours) {
+        val (mode, path) = t.removePrefix(DRAG_PREFIX).split(':', limit = 2)
+        val isFolder = path.endsWith("/")
+        val name = path.trimEnd('/').substringAfterLast('/')
+        val to = folder + name + if (isFolder) "/" else ""
+        if (folder.startsWith(path)) continue // Into itself.
+        if (mode == "move") {
+            if (path.trimEnd('/').substringBeforeLast('/') + "/" == folder) continue // Already here.
+            repo.api().driveMove(path, to)
+        } else repo.api().driveCopy(path, to)
     }
-    val permissions = (context as? android.app.Activity)?.requestDragAndDropPermissions(e)
     try {
-        items.mapNotNull { it.uri }.forEach { uploadInto(context, repo, folder, it) }
+        dropped.uris.forEach { uploadInto(context, repo, folder, it) }
     } finally {
-        permissions?.release()
+        dropped.permissions?.release()
     }
 }
 
