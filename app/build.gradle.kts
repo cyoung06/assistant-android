@@ -18,9 +18,66 @@ openApiGenerate {
 android.sourceSets.getByName("main").kotlin.srcDir(file("build/generated/openapi/src/main/kotlin"))
 tasks.named("preBuild") { dependsOn("openApiGenerate") }
 
+// The shared core (assistant-core, the core/ submodule: math and diagrams drawn the same as on the
+// Mac and the web), built with cargo (rustup's, from Homebrew).
+abstract class Cargo : DefaultTask() {
+    @get:InputFiles abstract val sources: ConfigurableFileCollection
+    @get:Internal abstract val crate: DirectoryProperty
+    @get:OutputDirectory abstract val output: DirectoryProperty
+    @get:Inject abstract val exec: ExecOperations
+
+    protected fun cargo(vararg args: String, env: Map<String, String> = emptyMap()) {
+        exec.exec {
+            workingDir = crate.get().asFile
+            environment("PATH", listOf("/opt/homebrew/opt/rustup/bin", "${System.getProperty("user.home")}/.cargo/bin", System.getenv("PATH")).joinToString(":"))
+            env.forEach { (k, v) -> environment(k, v) }
+            commandLine(listOf("cargo") + args)
+        }
+    }
+}
+
+/** The core for arm64 (cargo-ndk), as jniLibs. */
+abstract class CoreLibrary : Cargo() {
+    @get:Internal abstract val ndk: DirectoryProperty
+
+    @TaskAction
+    fun build() = cargo(
+        "ndk", "-t", "arm64-v8a", "--platform", "29", "-o", output.get().asFile.path, "build", "--release", "--lib",
+        env = mapOf("ANDROID_NDK_HOME" to ndk.get().asFile.path),
+    )
+}
+
+/** The core's Kotlin bindings, by UniFFI from a build for this machine (the Android one is stripped of what it reads). */
+abstract class CoreBindings : Cargo() {
+    @TaskAction
+    fun generate() {
+        cargo("build", "--lib")
+        cargo("run", "--bin", "uniffi-bindgen", "--", "generate", "--library", "target/debug/libassistant_core.dylib", "--language", "kotlin", "--no-format", "--out-dir", output.get().asFile.path)
+    }
+}
+
+val coreSources = listOf("src", "vendor", "Cargo.toml", "Cargo.lock", "uniffi.toml").map { rootProject.file("core/$it") }
+val coreLibrary = tasks.register<CoreLibrary>("coreLibrary") {
+    crate.set(rootProject.layout.projectDirectory.dir("core"))
+    sources.from(coreSources)
+    ndk.set(androidComponents.sdkComponents.ndkDirectory)
+}
+val coreBindings = tasks.register<CoreBindings>("coreBindings") {
+    crate.set(rootProject.layout.projectDirectory.dir("core"))
+    sources.from(coreSources)
+}
+androidComponents.onVariants { variant ->
+    // The fonts notes are set in, the same files the core draws with (and the Mac and the web use).
+    variant.sources.assets?.addStaticSourceDirectory(rootProject.file("core/fonts").path)
+    variant.sources.jniLibs?.addGeneratedSourceDirectory(coreLibrary, CoreLibrary::output)
+    variant.sources.kotlin?.addGeneratedSourceDirectory(coreBindings, CoreBindings::output)
+}
+
 android {
     namespace = "com.syeyoung.assistant"
     compileSdk = 37
+    // For the core's native library (see buildCore).
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.syeyoung.assistant"
@@ -62,6 +119,8 @@ android {
 }
 
 dependencies {
+    // UniFFI's Kotlin bindings call the core through JNA.
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
