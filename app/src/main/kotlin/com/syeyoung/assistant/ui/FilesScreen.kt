@@ -132,6 +132,8 @@ private object FilesNav {
 /** Files, in one pane or two side by side. */
 @Composable
 fun Files() {
+    // Back from the editor (or another app): show what changed there.
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { FilesNav.changes++; onPauseOrDispose { } }
     if (FilesNav.split && wide()) Row(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) { FilesScreen(0) }
         androidx.compose.material3.VerticalDivider()
@@ -240,6 +242,18 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
         FilesNav.folders[navKey] = path
         error = null
         runCatching { repo.api().driveFolder(path).propertyEntries }.onSuccess { entries = it }.onFailure { error = it.message }
+    }
+    // The file being previewed, as it is now (it may have been written on since).
+    LaunchedEffect(FilesNav.changes) {
+        val s = selected ?: return@LaunchedEffect
+        runCatching { repo.api().driveFolder(parentOf(s.path)).propertyEntries.find { it.path == s.path } }
+            .onSuccess { fresh -> if (fresh != null && selected?.path == fresh.path) selected = fresh }
+    }
+    // The file being previewed, as it is now (it may have been written on since).
+    LaunchedEffect(FilesNav.changes) {
+        val s = selected ?: return@LaunchedEffect
+        runCatching { repo.api().driveFolder(parentOf(s.path)).propertyEntries.find { it.path == s.path } }
+            .onSuccess { fresh -> if (fresh != null && selected?.path == fresh.path) selected = fresh }
     }
     LaunchedEffect(selected) { if (selected == null) FilesNav.previews.remove(navKey) else FilesNav.previews[navKey] = selected!! }
     // The tree shows where we are.
@@ -509,7 +523,8 @@ class EntryActions(
         saving = null
         run("Saving…") {
             withContext(Dispatchers.IO) {
-                val f = cached(context, e)
+                // PDFs with their writing drawn in, so any viewer shows it.
+                val f = if (previewKind(e.name) == PreviewKind.PDF) flattened(context, e) else cached(context, e)
                 context.contentResolver.openOutputStream(dest, "wt")!!.use { out -> f.inputStream().use { it.copyTo(out) } }
             }
             withContext(Dispatchers.Main) { Toast.makeText(context, "Saved ${e.name}", Toast.LENGTH_SHORT).show() }

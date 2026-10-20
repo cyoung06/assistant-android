@@ -106,7 +106,7 @@ fun FilePreview(e: DriveEntry, fullScreen: Boolean, onClose: () -> Unit, onOpenW
     val needsFile = kind == PreviewKind.PDF || kind == PreviewKind.IMAGE || ((kind == PreviewKind.TEXT || kind == PreviewKind.MARKDOWN) && e.propertySize <= TEXT_LIMIT)
     LaunchedEffect(e.path, e.modified) {
         if (!needsFile) return@LaunchedEffect
-        runCatching { cached(context, e) }.onSuccess { file = it }.onFailure { failed = it.message ?: "Couldn't fetch it" }
+        runCatching { if (kind == PreviewKind.PDF) flattened(context, e) else cached(context, e) }.onSuccess { file = it }.onFailure { failed = it.message ?: "Couldn't fetch it" }
     }
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
@@ -164,6 +164,25 @@ suspend fun cached(context: Context, e: DriveEntry): File = withContext(Dispatch
         tmp.renameTo(f)
     }
     f
+}
+
+/**
+ * A drive PDF with its annotations (the writing done on it here) drawn into its pages, cached like
+ * [cached]: PdfRenderer and many other viewers leave annotations out. The file itself if it has none.
+ */
+suspend fun flattened(context: Context, e: DriveEntry): File = withContext(Dispatchers.IO) {
+    val f = cached(context, e)
+    val flat = File(f.parentFile, f.name + ".flat")
+    val plain = File(f.parentFile, f.name + ".plain")
+    when {
+        flat.exists() -> flat
+        plain.exists() -> f
+        else -> {
+            val tmp = File(f.parentFile, flat.name + ".part")
+            if (runCatching { com.syeyoung.assistant.notebook.Flatten.flatten(context, f, tmp) }.getOrDefault(false) && tmp.renameTo(flat)) flat
+            else { tmp.delete(); plain.createNewFile(); f }
+        }
+    }
 }
 
 /** A PDF's pages, one under another, drawn as they scroll into view. */

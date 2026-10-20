@@ -167,7 +167,10 @@ class Api(endpoint: Endpoint) {
 
     /** A preview of a drive PDF's first page (JPEG); null if there's none. */
     suspend fun driveThumb(path: String, version: String?, width: Int): ByteArray? =
-        http.prepareGet("$base/api/v1/drive/thumb?path=${drivePath(path)}&version=${drivePath(version ?: "")}&width=$width").execute { r ->
+        http.prepareGet("$base/api/v1/drive/thumb?path=${drivePath(path)}&version=${drivePath(version ?: "")}&width=$width") {
+            // (Without it only JSON is accepted, and the drive answers 406.)
+            header(HttpHeaders.Accept, ContentType.Image.JPEG.toString())
+        }.execute { r ->
             if (r.status.isSuccess()) r.bodyAsChannel().toInputStream().use { it.readBytes() } else null
         }
 
