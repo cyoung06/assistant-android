@@ -236,7 +236,8 @@ class LivePreview(
             val size = size()
             if (size == null) {
                 // Not loaded (yet): its description, quietly.
-                val p = Paint(paint).apply { color = style.textTertiary.toInt() }
+                val quiet = style.textTertiary.toInt()
+                val p = Paint(paint).apply { color = quiet }
                 canvas.drawText(alt.ifEmpty { url ?: "" }, x, y.toFloat(), p)
                 return
             }
@@ -268,7 +269,8 @@ class LivePreview(
         private fun grid(): Grid {
             val available = width()
             laidOut?.takeIf { it.forWidth == available }?.let { return it }
-            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = fonts.text; textSize = body * 0.95f; color = style.text.toInt() }
+            val ink = style.text.toInt()
+            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = fonts.text; textSize = body * 0.95f; color = ink }
             val padX = px(12f)
             val padY = px(5f)
             val styled = rows.mapIndexed { r, row ->
@@ -312,8 +314,9 @@ class LivePreview(
             val g = grid()
             val padX = px(12f)
             val padY = px(5f)
-            val line = Paint().apply { color = style.rule.toInt(); strokeWidth = maxOf(1f, density) }
-            val header = Paint().apply { color = style.codeBackground.toInt() }
+            val (rule, headerColor) = style.rule.toInt() to style.codeBackground.toInt()
+            val line = Paint().apply { color = rule; strokeWidth = maxOf(1f, density) }
+            val header = Paint().apply { color = headerColor }
             var rowTop = y - g.height - px(6f)
             val right = x + g.columns.sum()
             for ((r, row) in g.cells.withIndex()) {
