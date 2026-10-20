@@ -9,12 +9,14 @@ import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewGroup
 import android.view.ViewGroup.MarginLayoutParams
 import android.widget.FrameLayout
 import android.widget.EditText
 import android.widget.ScrollView
+import androidx.core.view.ViewCompat
 import com.syeyoung.assistant.core.NoteStyle
 import com.syeyoung.assistant.core.Span
 import com.syeyoung.assistant.core.markdownSpans
@@ -66,6 +68,23 @@ class NoteEditor(
             super.onSizeChanged(w, h, oldw, oldh)
             if (w != oldw) restyle(structure = false)
         }
+
+        // With a keyboard: Ctrl-B bold, Ctrl-I italic, Ctrl-K a link, Ctrl-S saves (as on the web).
+        override fun onKeyShortcut(keyCode: Int, event: KeyEvent): Boolean {
+            if (!event.isCtrlPressed || document.readOnly) return super.onKeyShortcut(keyCode, event)
+            when (keyCode) {
+                KeyEvent.KEYCODE_B -> wrap("**")
+                KeyEvent.KEYCODE_I -> wrap("*")
+                KeyEvent.KEYCODE_K -> link()
+                KeyEvent.KEYCODE_S -> scope.launch { document.save() }
+                else -> return super.onKeyShortcut(keyCode, event)
+            }
+            return true
+        }
+
+        // The "/" menu takes the arrow keys and Enter while it's open.
+        override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean =
+            (slash.isShowing && slash.onKeyDown(keyCode, event)) || super.onKeyDown(keyCode, event)
     }.apply {
         background = null
         gravity = Gravity.TOP or Gravity.START
@@ -96,7 +115,7 @@ class NoteEditor(
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable) {
                 restyle(structure = true)
-                if (!loading) document.edited()
+                if (!loading) { document.edited(); offerBlocks() }
             }
         })
         // A tap on a checkbox toggles its task; on a link (shown as one, not being edited), opens it.
@@ -122,7 +141,12 @@ class NoteEditor(
     private fun applyStyle() {
         val fonts = fonts ?: return
         val density = field.resources.displayMetrics.density
-        preview = LivePreview(style, fonts, density) { field.width - field.totalPaddingLeft - field.totalPaddingRight }
+        preview = LivePreview(
+            style, fonts, density,
+            width = { field.width - field.totalPaddingLeft - field.totalPaddingRight },
+            viewport = { view.height },
+            image = ::image,
+        )
         field.setTextSize(TypedValue.COMPLEX_UNIT_DIP, style.fontSize)
         field.setLineHeight((style.fontSize * style.lineHeight * density).toInt())
         field.setTextColor(style.text.toInt())
@@ -184,6 +208,131 @@ class NoteEditor(
         if (uri.scheme != null || href.startsWith("#") || href.startsWith("//")) return null
         URI(null, null, "/" + parentOf(path), null).resolve(URI(null, null, uri.path, null)).path.removePrefix("/")
     }.getOrNull()
+
+    // ---- editing ----
+
+    /** Applies a shared editing rule's changes (each against the text before any of them) and its selection. */
+    private fun apply(edit: com.syeyoung.assistant.core.Edit) {
+        val text = field.text
+        for (c in edit.changes.sortedByDescending { it.from }) text.replace(c.from.toInt(), c.to.toInt(), c.insert)
+        field.setSelection(edit.anchor.toInt().coerceIn(0, text.length), edit.head.toInt().coerceIn(0, text.length))
+    }
+
+    private fun wrap(mark: String) {
+        val (a, b) = minOf(field.selectionStart, field.selectionEnd) to maxOf(field.selectionStart, field.selectionEnd)
+        apply(com.syeyoung.assistant.core.toggleWrap(field.text.toString(), a.toUInt(), b.toUInt(), mark))
+    }
+
+    /** The selection as a link's text, with its address selected to type (Ctrl-K, as on the web). */
+    private fun link() {
+        val (a, b) = minOf(field.selectionStart, field.selectionEnd) to maxOf(field.selectionStart, field.selectionEnd)
+        val label = field.text.substring(a, b).ifEmpty { "link" }
+        field.text.replace(a, b, "[$label](https://)")
+        val url = a + label.length + 3
+        field.setSelection(url, url + 8)
+    }
+
+    /** The "/" menu: offered when "/" is typed at a line's start or after a space, narrowed by what's typed after it. */
+    private val slash = android.widget.ListPopupWindow(context).apply {
+        anchorView = field
+        isModal = false
+        width = (260 * context.resources.displayMetrics.density).toInt()
+        inputMethodMode = android.widget.ListPopupWindow.INPUT_METHOD_NOT_NEEDED
+    }
+    private var slashAt = -1
+    private var offered: List<com.syeyoung.assistant.core.SlashItem> = emptyList()
+
+    private fun offerBlocks() {
+        val text = field.text
+        val cursor = field.selectionStart
+        if (cursor < 0 || cursor != field.selectionEnd || document.readOnly) return slash.dismiss()
+        val lineStart = text.lastIndexOf('\n', cursor - 1) + 1
+        val before = text.substring(lineStart, cursor)
+        val match = Regex("(?:^|\\s)/([\\w ]*)$").find(before) ?: return slash.dismiss()
+        slashAt = lineStart + match.range.last - match.groupValues[1].length
+        val query = match.groupValues[1].trim().lowercase()
+        offered = com.syeyoung.assistant.core.slashItems().filter { item -> query.isEmpty() || "${item.label} ${item.keywords}".lowercase().split(' ').any { it.startsWith(query) } }
+        if (offered.isEmpty()) return slash.dismiss()
+        slash.setAdapter(android.widget.ArrayAdapter(field.context, android.R.layout.simple_list_item_1, offered.map { it.label }))
+        slash.setOnItemClickListener { _, _, i, _ -> insertBlock(offered[i]) }
+        // Below the cursor's line.
+        val layout = field.layout ?: return
+        val line = layout.getLineForOffset(cursor)
+        slash.horizontalOffset = (layout.getPrimaryHorizontal(cursor) + field.totalPaddingLeft).toInt()
+        slash.verticalOffset = layout.getLineBottom(line) + field.totalPaddingTop - field.height
+        slash.show()
+        slash.listView?.setSelection(0)
+    }
+
+    private fun insertBlock(item: com.syeyoung.assistant.core.SlashItem) {
+        slash.dismiss()
+        val from = slashAt.coerceIn(0, field.text.length)
+        field.text.replace(from, field.selectionStart.coerceAtLeast(from), item.text)
+        field.setSelection((from + item.cursor.toInt()).coerceAtMost(field.text.length))
+    }
+
+    /** An image (pasted, dropped, from the keyboard) uploaded into the note's attachments/ (a free name) and linked at the cursor. */
+    private fun insertImage(uri: android.net.Uri) {
+        if (document.readOnly) return
+        val context = field.context
+        val at = field.selectionStart.coerceAtLeast(0)
+        scope.launch {
+            val link = runCatching {
+                withContext(Dispatchers.IO) {
+                    val resolver = context.contentResolver
+                    val mime = resolver.getType(uri) ?: "image/png"
+                    val shown = resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: ""
+                    val now = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
+                    val name = com.syeyoung.assistant.core.pastedName(shown, mime, now)
+                    val bytes = resolver.openInputStream(uri)!!.use { it.readBytes() }
+                    val api = com.syeyoung.assistant.data.Repo.get(context).api()
+                    val (made, _) = api.driveCreate(parentOf(path) + "attachments/" + name) { api.driveWrite(it, bytes, mime, absent = true) }
+                    com.syeyoung.assistant.core.relativeLink(parentOf(path), made)
+                }
+            }.getOrElse { e -> android.widget.Toast.makeText(context, "Couldn't add the image: ${e.message}", android.widget.Toast.LENGTH_LONG).show(); return@launch }
+            // On a line of its own, as the web does.
+            val text = field.text
+            val pos = at.coerceAtMost(text.length)
+            val lineStart = pos == 0 || text[pos - 1] == '\n'
+            val insert = (if (lineStart) "" else "\n") + "![]($link)\n"
+            text.insert(pos, insert)
+            field.setSelection(pos + insert.length)
+        }
+    }
+
+    // ---- images in the note ----
+
+    /** Images by their link: loaded, or being loaded (null). */
+    private val images = HashMap<String, android.graphics.Bitmap?>()
+
+    /** The image a link in the note shows, if it's loaded; asking starts loading it (the note is styled again when it's in). */
+    private fun image(url: String): android.graphics.Bitmap? {
+        if (url in images) return images[url]
+        images[url] = null
+        val context = field.context
+        scope.launch {
+            val bitmap = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = com.syeyoung.assistant.core.linkPath(parentOf(path), url)?.let { drivePath ->
+                        // A drive image: its copy here, downloaded only if it changed.
+                        com.syeyoung.assistant.drive.LocalCopies.fetch(context, drivePath).file.readBytes()
+                    } ?: URI(url).takeIf { it.scheme == "https" || it.scheme == "http" }?.toURL()?.openStream()?.use { it.readBytes() }
+                    bytes?.let(::decode)
+                }.getOrNull()
+            }
+            images[url] = bitmap
+            if (bitmap != null) restyle(structure = false)
+        }
+        return null
+    }
+
+    /** A picture's bitmap, decoded smaller when it's big (about 2048px across is plenty here). */
+    private fun decode(bytes: ByteArray): android.graphics.Bitmap? {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }.also { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, it) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2048) sample *= 2
+        return android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+    }
 
     // ---- what the screen asks ----
 

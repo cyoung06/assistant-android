@@ -33,7 +33,12 @@ class LivePreview(
     private val fonts: NoteCore.Fonts,
     private val density: Float,
     private val width: () -> Int,
+    /** The editor's visible height (images are at most 60% of it, as on the web). */
+    private val viewport: () -> Int,
+    /** An image's bitmap by its link, if it's loaded (asking starts loading it; the text is styled again when it's in). */
+    private val image: (url: String) -> android.graphics.Bitmap?,
 ) {
+    private val dark = android.graphics.Color.luminance(style.background.toInt()) < 0.5f
     /** Marks our spans, to take them off before styling again. */
     private interface Ours
 
@@ -55,6 +60,15 @@ class LivePreview(
             if (to > from || flags == Spanned.SPAN_INCLUSIVE_INCLUSIVE) text.setSpan(span, from.coerceIn(0, text.length), to.coerceIn(0, text.length), flags)
         }
         fun hideMarks(s: Span) { if (!source) for (m in s.marks) put(Hidden(), m.from.toInt(), m.to.toInt()) }
+        // Something drawn in place of a block of lines: on its first line, the rest taking no room.
+        fun block(span: Ours, from: Int, to: Int) {
+            val firstEnd = minOf(to, lineEnd(from))
+            put(span, from, firstEnd)
+            if (firstEnd < to) {
+                put(Hidden(), firstEnd, to)
+                put(Collapsed(), firstEnd + 1, lineEnd(maxOf(firstEnd + 1, to - 1)).let { if (it < text.length) it + 1 else it }, Spanned.SPAN_PARAGRAPH)
+            }
+        }
         // A paragraph span covers whole lines.
         fun paragraph(span: Ours, from: Int, to: Int) = put(span, lineStart(from), lineEnd(maxOf(from, to - 1)).let { if (it < text.length) it + 1 else it }, Spanned.SPAN_PARAGRAPH)
 
@@ -80,15 +94,7 @@ class LivePreview(
                 is Element.Math -> {
                     if (editing) { put(Code(fonts.code, style.mathSourceSize), from, to); put(Color(style.accent), from, to); continue }
                     val drawing = typeset(e.tex, e.display) ?: continue
-                    val firstEnd = minOf(to, lineEnd(from))
-                    if (e.display) {
-                        put(Math(drawing, display = true), from, firstEnd)
-                        // The rest of a formula written over several lines takes no room.
-                        if (firstEnd < to) {
-                            put(Hidden(), firstEnd, to)
-                            paragraph(Collapsed(), firstEnd + 1, to)
-                        }
-                    } else put(Math(drawing, display = false), from, to)
+                    if (e.display) block(Math(drawing, display = true), from, to) else put(Math(drawing, display = false), from, to)
                 }
                 Element.Bullet -> if (!lineTouched(from) && !source) s.marks.firstOrNull()?.let { put(Bullet(style.textSecondary), it.from.toInt(), it.to.toInt()) }
                 is Element.Task -> {
@@ -107,15 +113,31 @@ class LivePreview(
                 }
                 Element.Rule -> if (!lineTouched(from) && !source) put(RuleLine(style.rule, width), from, to)
                 is Element.CodeBlock -> {
+                    // A Mermaid diagram, drawn (as written while it's being edited, or if it isn't valid).
+                    if (e.language.equals("mermaid", ignoreCase = true) && !editing) {
+                        diagram(e.code)?.let { block(Picture(it, pad = px(6f)), from, to); continue }
+                    }
                     paragraph(CodeBlock(style), from, to)
                     put(Code(fonts.code, style.codeBlockSize), from, to)
                     if (!editing) for (m in s.marks) { put(Size(style.fenceSize / style.codeBlockSize), m.from.toInt(), m.to.toInt()); put(Color(style.textTertiary), m.from.toInt(), m.to.toInt()) }
                 }
-                // Tables show as written, in code type, until they're drawn as tables.
-                Element.Table -> { put(Code(fonts.code, style.codeBlockSize), from, to); put(Color(style.text), from, to) }
-                is Element.Image -> {}
+                is Element.Table -> {
+                    if (editing) { put(Code(fonts.code, style.codeBlockSize), from, to); put(Color(style.text), from, to) }
+                    else block(Table(e.rows, e.alignments), from, to)
+                }
+                is Element.Image -> if (!editing) put(Picture(null, pad = 0f, url = e.url, alt = e.alt), from, to)
             }
         }
+    }
+
+    /** Diagrams by source (laying one out is the slow part). */
+    private val diagrams = object : LinkedHashMap<String, Painted?>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Painted?>) = size > 32
+    }
+
+    /** A Mermaid diagram drawn by the core in this style's theme; null if it isn't valid (it shows as written). */
+    private fun diagram(source: String): Painted? = diagrams.getOrPut("$dark|$source") {
+        try { Painted(com.syeyoung.assistant.core.renderMermaid(source, dark)) } catch (e: RenderException) { null }
     }
 
     /** [tex] typeset at the body size in the text colour; null if it isn't valid TeX (it shows as written). */
@@ -186,6 +208,134 @@ class LivePreview(
         override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
             val left = if (display) x + ((width() - drawing.width) / 2f).coerceAtLeast(0f) else x
             drawing.paint(canvas, left, y - drawing.baseline)
+        }
+    }
+
+    /**
+     * A picture in place of its source, as wide as the column at most and centred: a drawing from
+     * the core (a diagram), or an image by its link (shown once it's loaded; [alt] until then).
+     */
+    private inner class Picture(val drawing: Painted?, val pad: Float, val url: String? = null, val alt: String = "") : ReplacementSpan(), Ours {
+        /** The picture's size here: shrunk to fit the column (and, for images, 60% of the visible height). */
+        private fun size(): Pair<Float, Float>? {
+            val (w, h) = drawing?.let { it.width to it.height } ?: url?.let(image)?.let { it.width.toFloat() to it.height.toFloat() } ?: return null
+            val scale = minOf(1f, width() / w, if (url != null) viewport() * 0.6f / h else Float.MAX_VALUE)
+            return w * scale to h * scale
+        }
+
+        override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int {
+            val (w, h) = size() ?: return paint.measureText(alt.ifEmpty { url ?: "" }).toInt()
+            fm?.let {
+                it.ascent = -(h + 2 * pad).toInt(); it.top = it.ascent
+                it.descent = 0; it.bottom = 0
+            }
+            return if (drawing != null) width() else w.toInt()
+        }
+
+        override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
+            val size = size()
+            if (size == null) {
+                // Not loaded (yet): its description, quietly.
+                val p = Paint(paint).apply { color = style.textTertiary.toInt() }
+                canvas.drawText(alt.ifEmpty { url ?: "" }, x, y.toFloat(), p)
+                return
+            }
+            val (w, h) = size
+            val left = if (drawing != null) x + (width() - w) / 2f else x
+            val topY = y - h - pad
+            if (drawing != null) drawing.paint(canvas, left, topY, w / drawing.width)
+            else url?.let(image)?.let { bitmap ->
+                val r = px(6f)
+                val clip = android.graphics.Path().apply { addRoundRect(RectF(left, topY, left + w, topY + h), r, r, android.graphics.Path.Direction.CW) }
+                canvas.save(); canvas.clipPath(clip)
+                canvas.drawBitmap(bitmap, null, RectF(left, topY, left + w, topY + h), Paint(Paint.FILTER_BITMAP_FLAG))
+                canvas.restore()
+            }
+        }
+    }
+
+    /**
+     * A GFM table drawn as one (as the web does): each cell's Markdown styled by these same rules,
+     * in 0.95em text, padded 5 by 12, the header row in 600 on the code background, rules between.
+     */
+    private inner class Table(val rows: List<List<String>>, val alignments: List<com.syeyoung.assistant.core.Alignment>) : ReplacementSpan(), Ours {
+        private var laidOut: Grid? = null
+
+        private inner class Grid(val forWidth: Int, val cells: List<List<android.text.StaticLayout>>, val columns: FloatArray, val heights: FloatArray) {
+            val height get() = heights.sum()
+        }
+
+        private fun grid(): Grid {
+            val available = width()
+            laidOut?.takeIf { it.forWidth == available }?.let { return it }
+            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = fonts.text; textSize = body * 0.95f; color = style.text.toInt() }
+            val padX = px(12f)
+            val padY = px(5f)
+            val styled = rows.mapIndexed { r, row ->
+                row.map { cell ->
+                    android.text.SpannableStringBuilder(cell).also { sb ->
+                        apply(sb, com.syeyoung.assistant.core.markdownSpans(cell), null, false)
+                        if (r == 0) sb.setSpan(Weight(600), 0, sb.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+                    }
+                }
+            }
+            val count = rows.maxOf { it.size }
+            val natural = FloatArray(count) { c -> styled.maxOf { row -> row.getOrNull(c)?.let { android.text.Layout.getDesiredWidth(it, paint) } ?: 0f } + 2 * padX }
+            // Narrower columns when it doesn't fit: their text wraps.
+            val scale = minOf(1f, available / natural.sum())
+            val columns = FloatArray(count) { natural[it] * scale }
+            val cells = styled.map { row ->
+                List(count) { c ->
+                    val sb = row.getOrNull(c) ?: android.text.SpannableStringBuilder("")
+                    val align = when (alignments.getOrNull(c)) {
+                        com.syeyoung.assistant.core.Alignment.CENTER -> android.text.Layout.Alignment.ALIGN_CENTER
+                        com.syeyoung.assistant.core.Alignment.RIGHT -> android.text.Layout.Alignment.ALIGN_OPPOSITE
+                        else -> android.text.Layout.Alignment.ALIGN_NORMAL
+                    }
+                    android.text.StaticLayout.Builder.obtain(sb, 0, sb.length, paint, (columns[c] - 2 * padX).toInt().coerceAtLeast(1)).setAlignment(align).build()
+                }
+            }
+            val heights = FloatArray(cells.size) { r -> cells[r].maxOf { it.height }.toFloat() + 2 * padY }
+            return Grid(available, cells, columns, heights).also { laidOut = it }
+        }
+
+        override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int {
+            val g = grid()
+            fm?.let {
+                it.ascent = -(g.height + 2 * px(6f)).toInt(); it.top = it.ascent
+                it.descent = 0; it.bottom = 0
+            }
+            return width()
+        }
+
+        override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
+            val g = grid()
+            val padX = px(12f)
+            val padY = px(5f)
+            val line = Paint().apply { color = style.rule.toInt(); strokeWidth = maxOf(1f, density) }
+            val header = Paint().apply { color = style.codeBackground.toInt() }
+            var rowTop = y - g.height - px(6f)
+            val right = x + g.columns.sum()
+            for ((r, row) in g.cells.withIndex()) {
+                if (r == 0) canvas.drawRect(x, rowTop, right, rowTop + g.heights[0], header)
+                var cellLeft = x
+                for ((c, cell) in row.withIndex()) {
+                    canvas.save()
+                    canvas.translate(cellLeft + padX, rowTop + padY)
+                    cell.draw(canvas)
+                    canvas.restore()
+                    cellLeft += g.columns[c]
+                }
+                rowTop += g.heights[r]
+            }
+            // Borders: around every cell.
+            var at = y - g.height - px(6f)
+            canvas.drawLine(x, at, right, at, line)
+            for (h in g.heights) { at += h; canvas.drawLine(x, at, right, at, line) }
+            var cx = x
+            val tableTop = y - g.height - px(6f)
+            canvas.drawLine(cx, tableTop, cx, tableTop + g.height, line)
+            for (w in g.columns) { cx += w; canvas.drawLine(cx, tableTop, cx, tableTop + g.height, line) }
         }
     }
 
