@@ -64,7 +64,10 @@ class LivePreview(
         fun hideMarks(s: Span) { if (!source) for (m in s.marks) put(Hidden(), m.from.toInt(), m.to.toInt()) }
         // Something drawn in place of a block of lines: on its first line, the rest hidden and taking
         // no room. (Each line on its own: Android's replacement spans can't cross a line break.)
+        // Up to where something is drawn in place of the text: what's inside it (a table's cells) isn't styled again.
+        var replacedTo = -1
         fun block(span: Ours, from: Int, to: Int) {
+            replacedTo = to
             val firstEnd = minOf(to, lineEnd(from))
             put(span, from, firstEnd)
             var line = firstEnd + 1
@@ -81,7 +84,7 @@ class LivePreview(
         for (s in spans) {
             val from = s.range.from.toInt()
             val to = s.range.to.toInt().coerceAtMost(text.length)
-            if (to <= from) continue
+            if (to <= from || from < replacedTo) continue
             val editing = source || touches(from, to)
             when (val e = s.element) {
                 is Element.Heading -> {
