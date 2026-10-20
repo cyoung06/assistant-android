@@ -148,7 +148,8 @@ class NoteEditor(
             image = ::image,
         )
         field.setTextSize(TypedValue.COMPLEX_UNIT_DIP, style.fontSize)
-        field.setLineHeight((style.fontSize * style.lineHeight * density).toInt())
+        // (Line height comes from the preview's own span: collapsed lines need none.)
+        field.setLineSpacing(0f, 1f)
         field.setTextColor(style.text.toInt())
         field.setHintTextColor(style.textTertiary.toInt())
         field.highlightColor = style.accentSoft.toInt()

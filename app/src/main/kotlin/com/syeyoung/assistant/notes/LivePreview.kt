@@ -59,14 +59,20 @@ class LivePreview(
         fun put(span: Ours, from: Int, to: Int, flags: Int = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) {
             if (to > from || flags == Spanned.SPAN_INCLUSIVE_INCLUSIVE) text.setSpan(span, from.coerceIn(0, text.length), to.coerceIn(0, text.length), flags)
         }
+        // Every line at least the note's line height, the extra split above and below (as CSS does).
+        put(LineHeight(px(style.fontSize * style.lineHeight)), 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
         fun hideMarks(s: Span) { if (!source) for (m in s.marks) put(Hidden(), m.from.toInt(), m.to.toInt()) }
-        // Something drawn in place of a block of lines: on its first line, the rest taking no room.
+        // Something drawn in place of a block of lines: on its first line, the rest hidden and taking
+        // no room. (Each line on its own: Android's replacement spans can't cross a line break.)
         fun block(span: Ours, from: Int, to: Int) {
             val firstEnd = minOf(to, lineEnd(from))
             put(span, from, firstEnd)
-            if (firstEnd < to) {
-                put(Hidden(), firstEnd, to)
-                put(Collapsed(), firstEnd + 1, lineEnd(maxOf(firstEnd + 1, to - 1)).let { if (it < text.length) it + 1 else it }, Spanned.SPAN_PARAGRAPH)
+            var line = firstEnd + 1
+            while (line < to) {
+                val end = minOf(lineEnd(line), to)
+                put(Hidden(), line, end)
+                put(Collapsed(), line, if (end < text.length) end + 1 else end, Spanned.SPAN_PARAGRAPH)
+                line = end + 1
             }
         }
         // A paragraph span covers whole lines.
@@ -395,10 +401,28 @@ class LivePreview(
         }
     }
 
-    /** Lines that take no room (the rest of a display formula written over several lines). */
+    /** Lines that take no room (the rest of a block drawn on its first line). */
     private class Collapsed : LineHeightSpan, Ours {
         override fun chooseHeight(text: CharSequence, start: Int, end: Int, spanstartv: Int, lineHeight: Int, fm: Paint.FontMetricsInt) {
             fm.ascent = 0; fm.descent = 0; fm.top = 0; fm.bottom = 0
+        }
+    }
+
+    /**
+     * CSS's line-height: a line at least [height] tall, the room it adds split evenly above and below
+     * (a taller line, with math or a picture in it, keeps its own height). Not on collapsed lines.
+     */
+    private class LineHeight(val height: Float) : LineHeightSpan, Ours {
+        override fun chooseHeight(text: CharSequence, start: Int, end: Int, spanstartv: Int, lineHeight: Int, fm: Paint.FontMetricsInt) {
+            if ((text as Spanned).getSpans(start, end, Collapsed::class.java).any { text.getSpanStart(it) <= start }) return
+            val current = fm.descent - fm.ascent
+            if (current >= height) return
+            val extra = height - current
+            val above = (extra / 2f).toInt()
+            fm.ascent -= above
+            fm.descent += (extra - above).toInt()
+            fm.top = minOf(fm.top, fm.ascent)
+            fm.bottom = maxOf(fm.bottom, fm.descent)
         }
     }
 
