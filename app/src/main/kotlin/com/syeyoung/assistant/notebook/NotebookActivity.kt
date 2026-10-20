@@ -1,5 +1,7 @@
 package com.syeyoung.assistant.notebook
 
+import com.syeyoung.assistant.BuildConfig
+
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
@@ -57,7 +59,7 @@ import kotlin.math.roundToInt
  * and a slim toolbar can be dragged to any edge. The writing is saved into the PDF as you go.
  */
 class NotebookActivity : ComponentActivity() {
-    private var title = ""
+    private var title by androidx.compose.runtime.mutableStateOf("")
     private lateinit var view: NotebookView
     private val renderer = PageRenderer()
     private var file: NotebookFile? = null
@@ -68,12 +70,14 @@ class NotebookActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Diagnostics (adb only): how PdfRenderer places a page under a transform with an offset.
-        if (intent.getBooleanExtra("renderTest", false)) { RenderTest.run(this); return finish() }
-        val uri = intent.data ?: return finish()
+        // Diagnostics (adb, debug builds only): how PdfRenderer places a page under a transform with an offset.
+        if (BuildConfig.DEBUG && intent.getBooleanExtra("renderTest", false)) { RenderTest.run(this); return finish() }
+        // Documents only (content://): a file:// path would be read and saved with this app's own access.
+        val uri = intent.data?.takeIf { it.scheme == android.content.ContentResolver.SCHEME_CONTENT } ?: return finish()
         Notebooks.remember(this, uri)
         title = Notebooks.name(this, uri)
         ui.load(prefs())
+        if (uri.authority == com.syeyoung.assistant.drive.DriveProvider.authority(this)) followConflicts(android.provider.DocumentsContract.getDocumentId(uri))
 
         val ink = InProgressStrokesView(this)
         view = NotebookView(this, ink, renderer).apply {
@@ -192,7 +196,7 @@ class NotebookActivity : ComponentActivity() {
             runCatching {
                 withContext(Dispatchers.IO) {
                     val opened = NotebookFile.open(this@NotebookActivity, uri) { InkIds.next() }
-                    opened to renderer.open(opened.file.base)
+                    opened to renderer.open(opened.file.base, opened.sizes)
                 }
             }.onSuccess { (opened, sizes) ->
                 file = opened.file
@@ -200,20 +204,7 @@ class NotebookActivity : ComponentActivity() {
                 view.readOnly = ui.readOnly
                 ui.bookmarks = opened.bookmarks
                 view.setDocument(sizes, opened.strokes, opened.images)
-                // Diagnostics (adb only): open at a given zoom.
-                intent.getFloatExtra("zoom", 0f).takeIf { it > 0f }?.let { z -> view.post { view.zoomForTest(z) } }
-                // Diagnostics (adb only): insert an image file.
-                intent.getStringExtra("insertImage")?.let { path -> lifecycleScope.launch { insertImage(android.net.Uri.fromFile(java.io.File(path))) } }
-                // Diagnostics (adb only): zoom slowly, as a long pinch would.
-                intent.getFloatExtra("zoomTo", 0f).takeIf { it > 0f }?.let { z ->
-                    view.postDelayed({
-                        android.animation.ValueAnimator.ofFloat(1f, z).apply {
-                            duration = 8000
-                            addUpdateListener { view.zoomForTest(it.animatedValue as Float) }
-                            start()
-                        }
-                    }, 1500)
-                }
+                if (BuildConfig.DEBUG) diagnostics()
                 ui.status = ""
             }.onFailure { e ->
                 Toast.makeText(this@NotebookActivity, "Couldn't open this PDF: ${e.message}", Toast.LENGTH_LONG).show()
@@ -265,6 +256,43 @@ class NotebookActivity : ComponentActivity() {
     }
 
     private fun prefs(): SharedPreferences = getSharedPreferences("notebooks", Context.MODE_PRIVATE)
+
+    /** Diagnostics driven from adb (debug builds only): zooming and inserting an image file. */
+    private fun diagnostics() {
+        // Open at a given zoom.
+        intent.getFloatExtra("zoom", 0f).takeIf { it > 0f }?.let { z -> view.post { view.zoomForTest(z) } }
+        // Insert an image file.
+        intent.getStringExtra("insertImage")?.let { path -> lifecycleScope.launch { insertImage(android.net.Uri.fromFile(java.io.File(path))) } }
+        // Zoom slowly, as a long pinch would.
+        intent.getFloatExtra("zoomTo", 0f).takeIf { it > 0f }?.let { z ->
+            view.postDelayed({
+                android.animation.ValueAnimator.ofFloat(1f, z).apply {
+                    duration = 8000
+                    addUpdateListener { view.zoomForTest(it.animatedValue as Float) }
+                    start()
+                }
+            }, 1500)
+        }
+    }
+
+    /**
+     * When the drive file open here (at [path]) was changed elsewhere, the writing went into a copy
+     * beside it: from then on this notebook is that copy (so it isn't copied again on every save).
+     */
+    private fun followConflicts(path: String) {
+        var current = path
+        lifecycleScope.launch {
+            com.syeyoung.assistant.drive.LocalCopies.conflicts.collect { c ->
+                if (c.path != current) return@collect
+                current = c.copy
+                val dest = com.syeyoung.assistant.drive.DriveProvider.uri(this@NotebookActivity, c.copy)
+                file?.uri = dest
+                Notebooks.remember(this@NotebookActivity, dest)
+                title = c.copy.substringAfterLast('/')
+                Toast.makeText(this@NotebookActivity, "This file was changed on another device. Your writing is in \"$title\", beside it.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     /** Whether a document's storage says it can be written (others are found out on saving). */
     private fun writable(uri: android.net.Uri): Boolean {
@@ -512,14 +540,25 @@ class NotebookActivity : ComponentActivity() {
         }
     }
 
+    /** The save started on leaving, which outlives this screen (its own scope would cancel it). */
+    private var leaving: Job? = null
+
     override fun onPause() {
         super.onPause()
-        if (dirty) lifecycleScope.launch { save() }
+        if (dirty) leaving = (application as com.syeyoung.assistant.AssistantApplication).scope.launch(Dispatchers.Main) { save() }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         renderer.close()
+        val f = file ?: return
+        val before = leaving
+        // Once anything unsaved is saved, this session's working files go.
+        (application as com.syeyoung.assistant.AssistantApplication).scope.launch(Dispatchers.Main) {
+            before?.join()
+            save()
+            if (!dirty) withContext(Dispatchers.IO) { io.withLock { f.close() } }
+        }
     }
 }
 

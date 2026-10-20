@@ -14,12 +14,8 @@ import java.io.File
  * them anywhere. Links and popups stay annotations.
  */
 object Flatten {
-    /** Annotation types that draw something (a cheap check before loading the whole PDF). */
-    private val DRAWN = listOf("/Ink", "/Stamp", "/FreeText", "/Highlight", "/Underline", "/StrikeOut", "/Squiggly", "/Square", "/Circle", "/Line", "/Polygon", "/PolyLine", "/Caret", "/Widget")
-
     /** [pdf] with its annotations drawn in, written to [out]; false (and nothing written) if it has none to draw. */
     fun flatten(context: Context, pdf: File, out: File): Boolean {
-        if (!mayHaveDrawn(pdf)) return false
         PDFBoxResourceLoader.init(context.applicationContext)
         PDDocument.load(pdf, MemoryUsageSetting.setupTempFileOnly()).use { doc ->
             var drawn = 0
@@ -57,11 +53,5 @@ object Flatten {
             doc.save(out)
         }
         return true
-    }
-
-    /** Whether [pdf] might have annotations that draw something (compressed object streams might hide them). */
-    private fun mayHaveDrawn(pdf: File): Boolean {
-        val text = String(pdf.readBytes(), Charsets.ISO_8859_1)
-        return "/ObjStm" in text || ("/Annots" in text && DRAWN.any { it in text })
     }
 }

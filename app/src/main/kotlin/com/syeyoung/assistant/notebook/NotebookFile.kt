@@ -52,56 +52,64 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
         private val IMAGE_TYPE = COSName.getPDFName("AssistantImageType")
         private val IMAGE_CROP = COSName.getPDFName("AssistantImageCrop")
 
-        class Opened(val file: NotebookFile, val strokes: List<InkStroke>, val images: List<NoteImage>, val bookmarks: Set<Int>)
+        class Opened(val file: NotebookFile, val strokes: List<InkStroke>, val images: List<NoteImage>, val bookmarks: Set<Int>, val sizes: List<android.util.SizeF>)
 
-        /** Opens [uri]: its strokes and bookmarked pages, with the base written to a working file. */
+        /** How many backups (the PDF as each session found it) are kept per notebook. */
+        private const val BACKUPS = 5
+
+        /** Opens [uri]: its strokes and bookmarked pages, with the base written to a working file (of this session's own). */
         fun open(context: Context, uri: Uri, nextId: () -> Long): Opened {
             PDFBoxResourceLoader.init(context.applicationContext)
-            val dir = File(context.cacheDir, "notebook").apply { mkdirs() }
+            val sessions = File(context.cacheDir, "notebook").apply { mkdirs() }
+            // Left behind by sessions that never closed (a crash); a day is longer than any is open.
+            sessions.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > 86_400_000 }?.forEach { it.deleteRecursively() }
+            val dir = File(sessions, java.util.UUID.randomUUID().toString()).apply { mkdirs() }
             val original = File(dir, "original.pdf")
             context.contentResolver.openInputStream(uri)!!.use { input -> original.outputStream().use { input.copyTo(it) } }
-            // The PDF as it was before this session, in case a save ever goes wrong.
-            File(context.filesDir, "notebook-backups").apply { mkdirs() }.let { dir ->
-                original.copyTo(File(dir, "${Integer.toHexString(uri.toString().hashCode())}.pdf"), overwrite = true)
+            // The PDF as each of the last few sessions found it, in case a save ever goes wrong.
+            File(context.filesDir, "notebook-backups").apply { mkdirs() }.let { backups ->
+                val key = Integer.toHexString(uri.toString().hashCode())
+                original.copyTo(File(backups, "$key-${System.currentTimeMillis()}.pdf"))
+                backups.listFiles { f -> f.name.startsWith("$key-") }?.sortedByDescending { it.name }?.drop(BACKUPS)?.forEach { it.delete() }
             }
             val base = File(dir, "base.pdf")
             val strokes = mutableListOf<InkStroke>()
             val images = mutableListOf<NoteImage>()
+            val sizes = mutableListOf<android.util.SizeF>()
             load(original).use { doc ->
                 doc.pages.forEachIndexed { index, page ->
+                    sizes += sizeOf(page)
                     val annots = page.cosObject.getDictionaryObject(COSName.ANNOTS) as? COSArray ?: return@forEachIndexed
                     val crop = page.cropBox
                     for (i in annots.size() - 1 downTo 0) {
                         val a = annots.getObject(i) as? COSDictionary ?: continue
                         // Our images: the bytes as imported, and where the annotation sits.
+                        // Ours are taken out of the base to be edited here (and written back on save). One that
+                        // can't be read back stays in the base as it is: shown, not editable, never lost.
                         (a.getDictionaryObject(IMAGE) as? com.tom_roush.pdfbox.cos.COSStream)?.let { stream ->
-                            annots.remove(i)
                             runCatching {
                                 val bytes = stream.createRawInputStream().use { it.readBytes() }
                                 val rect = (a.getDictionaryObject(COSName.RECT) as COSArray).toFloatArray()
-                                val bitmap = NoteImage.decode(bytes) ?: return@runCatching
+                                val bitmap = NoteImage.decode(bytes) ?: error("not an image")
                                 val r = android.graphics.RectF(rect[0] - crop.lowerLeftX, crop.upperRightY - rect[3], rect[2] - crop.lowerLeftX, crop.upperRightY - rect[1])
                                 val c = (a.getDictionaryObject(IMAGE_CROP) as? COSArray)?.toFloatArray()
                                 val crop = if (c != null && c.size == 4) android.graphics.RectF(c[0], c[1], c[2], c[3]) else android.graphics.RectF(0f, 0f, 1f, 1f)
-                                images += NoteImage(nextId(), index, r, bytes, a.getString(IMAGE_TYPE) ?: "image/png", bitmap, crop)
-                            }
+                                NoteImage(nextId(), index, r, bytes, a.getString(IMAGE_TYPE) ?: "image/png", bitmap, crop)
+                            }.onSuccess { images += it; annots.remove(i) }.onFailure { android.util.Log.w("NotebookFile", "image on page ${index + 1} kept as it is: $it") }
                             continue
                         }
                         val data = (a.getDictionaryObject(INK) as? COSString)?.bytes ?: continue
-                        annots.remove(i)
                         runCatching {
                             val tool = Tool.valueOf(a.getNameAsString(TOOL) ?: "PEN")
                             val brush = brushFor(tool, a.getInt(COLOR), a.getFloat(SIZE))
-                            val inputs = StrokeInputBatch.decode(data.inputStream())
-                            strokes += InkStroke(nextId(), index, tool, Stroke(brush, inputs))
-                        }
-                        // (A stroke that can't be read back stays out of the base, so it isn't drawn twice.)
+                            InkStroke(nextId(), index, tool, Stroke(brush, StrokeInputBatch.decode(data.inputStream())))
+                        }.onSuccess { strokes += it; annots.remove(i) }.onFailure { android.util.Log.w("NotebookFile", "stroke on page ${index + 1} kept as it is: $it") }
                     }
                 }
                 val bookmarks = takeBookmarks(doc)
                 doc.save(base)
                 original.delete()
-                return Opened(NotebookFile(context, uri, base), strokes, images, bookmarks)
+                return Opened(NotebookFile(context, uri, base), strokes, images, bookmarks, sizes)
             }
         }
 
@@ -126,6 +134,13 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
             return pages
         }
 
+        /** A page's size in points as PdfRenderer reports it: its crop box, turned with the page. */
+        private fun sizeOf(page: PDPage): android.util.SizeF {
+            val box = page.cropBox
+            val turned = ((page.rotation % 360) + 360) % 360 in setOf(90, 270)
+            return if (turned) android.util.SizeF(box.height, box.width) else android.util.SizeF(box.width, box.height)
+        }
+
         private fun load(file: File): PDDocument = PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly())
     }
 
@@ -140,9 +155,20 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
         out.delete()
     }
 
-    /** Just [pages] (with their writing) as a PDF of their own, for sharing or printing. */
+    /** Deletes this session's working files (the notebook itself is saved already). */
+    fun close() {
+        base.parentFile?.deleteRecursively()
+    }
+
+    /**
+     * Just [pages] as a PDF of their own, for sharing or printing: the writing drawn into the pages,
+     * so every viewer shows it (it's no longer editable there).
+     */
     fun export(strokes: List<InkStroke>, images: List<NoteImage>, pages: Set<Int>, out: File) {
-        write(strokes.filter { it.page in pages }, images.filter { it.page in pages }, emptySet(), out, keep = pages)
+        val annotated = File(base.parentFile, "export.pdf")
+        write(strokes.filter { it.page in pages }, images.filter { it.page in pages }, emptySet(), annotated, keep = pages)
+        if (!Flatten.flatten(context, annotated, out)) annotated.copyTo(out, overwrite = true)
+        annotated.delete()
     }
 
     /** Deletes [indices] (several pages at once). */

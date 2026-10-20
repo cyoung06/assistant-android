@@ -525,8 +525,7 @@ class EntryActions(
         saving = null
         run("Saving…") {
             withContext(Dispatchers.IO) {
-                // PDFs with their writing drawn in, so any viewer shows it.
-                val f = if (previewKind(e.name) == PreviewKind.PDF) flattened(context, e) else cached(context, e)
+                val f = cached(context, e)
                 context.contentResolver.openOutputStream(dest, "wt")!!.use { out -> f.inputStream().use { it.copyTo(out) } }
             }
             withContext(Dispatchers.Main) { Toast.makeText(context, "Saved ${e.name}", Toast.LENGTH_SHORT).show() }
@@ -827,14 +826,10 @@ private class LabelShadow(view: android.view.View, private val label: String) : 
 }
 
 /** Makes "Untitled.md" (numbered if taken) in [folder], starting with its title; its path. */
-private suspend fun newNote(repo: Repo, folder: String): String {
-    val taken = repo.api().driveFolder(folder).propertyEntries.map { it.name }.toSet()
-    var name = "Untitled.md"
-    var n = 2
-    while (name in taken) name = "Untitled (${n++}).md"
-    repo.api().driveWrite(folder + name, "# ${name.removeSuffix(".md")}\n\n".toByteArray(), "text/markdown; charset=utf-8")
-    return folder + name
-}
+private suspend fun newNote(repo: Repo, folder: String): String =
+    repo.api().driveCreate(folder + "Untitled.md") { at ->
+        repo.api().driveWrite(at, "# ${at.substringAfterLast('/').removeSuffix(".md")}\n\n".toByteArray(), "text/markdown; charset=utf-8", absent = true)
+    }.first
 
 /** Takes drops (drive entries, or files from other apps) into a folder; [locked] folders take none. */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -898,13 +893,14 @@ private fun iconOf(e: DriveEntry): ImageVector {
     }
 }
 
-/** Copies a picked file into the drive folder [folder]. */
+/** Copies a picked file into the drive folder [folder] (numbered if its name is taken). */
 private suspend fun uploadInto(context: Context, repo: Repo, folder: String, uri: Uri) = withContext(Dispatchers.IO) {
     val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "file"
     val tmp = File.createTempFile("upload", null, context.cacheDir)
     try {
         context.contentResolver.openInputStream(uri)!!.use { input -> tmp.outputStream().use { input.copyTo(it) } }
-        repo.api().driveUpload(folder + name.replace('/', ' '), tmp, context.contentResolver.getType(uri))
+        val type = context.contentResolver.getType(uri)
+        repo.api().driveCreate(folder + name.replace('/', ' ')) { at -> repo.api().driveUpload(at, tmp, type, absent = true) }
     } finally {
         tmp.delete()
     }

@@ -41,9 +41,9 @@ class PageRenderer(threads: Int = 3) {
     @Volatile private var file: File? = null
     @Volatile private var generation = 0
 
-    /** Opens [file] (for every thread) and returns its page sizes in points. */
-    fun open(file: File): List<SizeF> {
-        val sizes = PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)).use { r ->
+    /** Opens [file] (for every thread) and returns its page sizes in points ([known], if they are already). */
+    fun open(file: File, known: List<SizeF>? = null): List<SizeF> {
+        val sizes = known ?: PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)).use { r ->
             (0 until r.pageCount).map { i -> r.openPage(i).use { SizeF(it.width.toFloat(), it.height.toFloat()) } }
         }
         this.file = file

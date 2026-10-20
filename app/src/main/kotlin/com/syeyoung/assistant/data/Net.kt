@@ -36,6 +36,7 @@ import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
@@ -134,11 +135,25 @@ class Api(endpoint: Endpoint) {
 
     /** Copies a drive file into [to]. */
     suspend fun driveDownload(path: String, to: java.io.File) {
-        http.prepareGet("$base/api/v1/drive/file?path=${drivePath(path)}").execute { r ->
+        driveFetch(path, to, null)
+    }
+
+    /** What [driveFetch] found: whether the file was written, and the version it is. */
+    class Fetched(val changed: Boolean, val etag: String?)
+
+    /**
+     * Downloads a drive file to [to], unless the drive says it's still version [ifNoneMatch]
+     * (then [to] is left as it is).
+     */
+    suspend fun driveFetch(path: String, to: java.io.File, ifNoneMatch: String?): Fetched =
+        http.prepareGet("$base/api/v1/drive/file?path=${drivePath(path)}") {
+            if (ifNoneMatch != null) header(HttpHeaders.IfNoneMatch, ifNoneMatch)
+        }.execute { r ->
+            if (r.status == HttpStatusCode.NotModified) return@execute Fetched(false, ifNoneMatch)
             if (!r.status.isSuccess()) throw ApiException(r.status.value, "HTTP ${r.status.value}")
             to.outputStream().use { out -> r.bodyAsChannel().toInputStream().use { it.copyTo(out) } }
+            Fetched(true, etagOf(r))
         }
-    }
 
     /** A small drive file (a note, an image it shows): its bytes, version and type. */
     class DriveFile(val bytes: ByteArray, val etag: String?, val type: String?)
@@ -151,11 +166,13 @@ class Api(endpoint: Endpoint) {
 
     /**
      * Writes a small drive file; with [ifMatch] (the version it was read at) only if it's still that
-     * version: a 412 [ApiException] otherwise. The new version, if the drive says.
+     * version; with [absent], only if there's no file there yet: a 412 [ApiException] otherwise. The
+     * new version, if the drive says.
      */
-    suspend fun driveWrite(path: String, bytes: ByteArray, type: String?, ifMatch: String? = null): String? {
+    suspend fun driveWrite(path: String, bytes: ByteArray, type: String?, ifMatch: String? = null, absent: Boolean = false): String? {
         val r = http.put("$base/api/v1/drive/file?path=${drivePath(path)}") {
             if (ifMatch != null) header(HttpHeaders.IfMatch, ifMatch)
+            if (absent) header(HttpHeaders.IfNoneMatch, "*")
             setBody(io.ktor.http.content.ByteArrayContent(bytes, type?.let { ContentType.parse(it) } ?: ContentType.Application.OctetStream))
         }
         if (!r.status.isSuccess()) throw ApiException(r.status.value, problem(r.bodyAsText()) ?: "HTTP ${r.status.value}")
@@ -174,9 +191,15 @@ class Api(endpoint: Endpoint) {
             if (r.status.isSuccess()) r.bodyAsChannel().toInputStream().use { it.readBytes() } else null
         }
 
-    /** Writes [from] to a drive file (its folder is made if needed). */
-    suspend fun driveUpload(path: String, from: java.io.File, type: String?) = send {
+    /**
+     * Writes [from] to a drive file (its folder is made if needed); its new version, if the drive
+     * says. With [ifMatch] (the version it was based on), only if the drive still has that version;
+     * with [absent], only if there's no file there yet. A 412 [ApiException] otherwise.
+     */
+    suspend fun driveUpload(path: String, from: java.io.File, type: String?, ifMatch: String? = null, absent: Boolean = false): String? = send {
         http.put("$base/api/v1/drive/file?path=${drivePath(path)}") {
+            if (ifMatch != null) header(HttpHeaders.IfMatch, ifMatch)
+            if (absent) header(HttpHeaders.IfNoneMatch, "*")
             // Streamed from the file, not read into memory (scans and videos can be large).
             setBody(object : io.ktor.http.content.OutgoingContent.ReadChannelContent() {
                 override val contentLength = from.length()
@@ -184,7 +207,28 @@ class Api(endpoint: Endpoint) {
                 override fun readFrom() = from.inputStream().toByteReadChannel()
             })
         }
-    }.let { }
+    }.let { etagOf(it) }
+
+    /**
+     * Makes a new file at [path], or at "name (2).ext" and so on if that's taken: [put] writes it to
+     * the path it's given, with `absent` set so it never replaces a file (a 412 tries the next name).
+     * Where it went, and what [put] returned.
+     */
+    suspend fun <T> driveCreate(path: String, put: suspend (String) -> T): Pair<String, T> {
+        val folder = path.substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
+        val name = path.substringAfterLast('/')
+        val stem = name.substringBeforeLast('.').ifEmpty { name }
+        val ext = name.substring(stem.length)
+        for (n in 1..100) {
+            val at = folder + if (n == 1) name else "$stem ($n)$ext"
+            try {
+                return at to put(at)
+            } catch (e: ApiException) {
+                if (e.status != 412) throw e
+            }
+        }
+        throw ApiException(409, "no free name for $name")
+    }
 
     suspend fun driveMakeFolder(path: String) = send { http.post("$base/api/v1/drive/folder?path=${drivePath(path)}") }.let { }
     suspend fun driveMove(from: String, to: String) = send { http.post("$base/api/v1/drive/move?from=${drivePath(from)}&to=${drivePath(to)}") }.let { }

@@ -24,8 +24,9 @@ import java.time.OffsetDateTime
 /**
  * Each project's storage (its folder in the drive) as an Android storage location of its own, in
  * every app's file picker and the Files app, reaching the server through the app (its built-in
- * Tailscale too). Document IDs are drive paths (folders end with "/"). A file being opened is fetched into the cache;
- * one opened for writing is sent back when the app writing it closes it.
+ * Tailscale too). Document IDs are drive paths (folders end with "/"). A file being opened is its
+ * copy in [LocalCopies] (downloaded only if the drive's version changed); one opened for writing is
+ * sent back (if it wasn't changed on the drive meanwhile) when the app writing it closes it.
  */
 class DriveProvider : DocumentsProvider() {
 
@@ -124,28 +125,20 @@ class DriveProvider : DocumentsProvider() {
         parentDocumentId == TOP || documentId.startsWith(parentDocumentId)
 
     override fun openDocument(documentId: String, mode: String, signal: CancellationSignal?): ParcelFileDescriptor {
-        val cache = File(context!!.cacheDir, "drive").apply { mkdirs() }
-        val file = File(cache, Integer.toHexString(documentId.hashCode()) + "-" + documentId.substringAfterLast('/'))
-        val writing = 'w' in mode
-        if (writing && readOnly(documentId)) throw SecurityException("$documentId is kept as PLMS has it; copy it out to write on it")
-        // Truncating writes don't need what's there now.
-        if (!(writing && 't' in mode)) {
-            try {
-                net { repo.api().driveDownload(documentId, file) }
-            } catch (e: Exception) {
-                if (!writing) throw FileNotFoundException("$documentId: ${e.message}")
-                file.writeBytes(ByteArray(0))
-            }
-        }
         val pfdMode = ParcelFileDescriptor.parseMode(mode)
-        if (!writing) return ParcelFileDescriptor.open(file, pfdMode)
-        return ParcelFileDescriptor.open(file, pfdMode, uploads) { error ->
-            if (error != null) { Log.w("DriveProvider", "writing $documentId: $error"); return@open }
+        if ('w' !in mode) {
+            val copy = try { net { LocalCopies.fetch(context!!, documentId) } } catch (e: Exception) { throw FileNotFoundException("$documentId: ${e.message}") }
+            return ParcelFileDescriptor.open(copy.file, pfdMode)
+        }
+        if (readOnly(documentId)) throw SecurityException("$documentId is kept as PLMS has it; copy it out to write on it")
+        // A file of its own, which becomes the copy (and goes to the drive) only once it's closed without an error.
+        val w = net { LocalCopies.writing(context!!, documentId, truncate = 't' in mode, listed = known[documentId]?.etag) }
+        return ParcelFileDescriptor.open(w, pfdMode, uploads) { error ->
+            if (error != null) Log.w("DriveProvider", "writing $documentId: $error")
             try {
-                net { repo.api().driveUpload(documentId, file, mimeOf(documentId, false)) }
-                notifyParent(documentId)
+                net { LocalCopies.closed(context!!, documentId, w, ok = error == null) }
             } catch (e: Exception) {
-                Log.w("DriveProvider", "uploading $documentId: $e")
+                Log.e("DriveProvider", "keeping $documentId: $e")
             }
         }
     }
@@ -154,18 +147,28 @@ class DriveProvider : DocumentsProvider() {
         val parent = if (parentDocumentId == TOP) "" else parentDocumentId
         val name = displayName.replace('/', ' ')
         val folder = mimeType == Document.MIME_TYPE_DIR
-        val path = parent + name + if (folder) "/" else ""
-        net {
-            if (folder) repo.api().driveMakeFolder(path)
-            else File.createTempFile("new", null, context!!.cacheDir).let { empty -> try { repo.api().driveUpload(path, empty, mimeType) } finally { empty.delete() } }
+        if (folder) {
+            val path = "$parent$name/"
+            net { repo.api().driveMakeFolder(path) }
+            notifyParent(path)
+            return path
         }
-        notifyParent(path)
-        return path
+        // Never over a file that's there: "name (2).ext" and so on instead, as the contract allows.
+        val empty = File.createTempFile("new", null, context!!.cacheDir)
+        try {
+            val (path, etag) = net { repo.api().driveCreate(parent + name) { at -> repo.api().driveUpload(at, empty, mimeType, absent = true) } }
+            LocalCopies.created(context!!, path, etag)
+            notifyParent(path)
+            return path
+        } finally {
+            empty.delete()
+        }
     }
 
     override fun deleteDocument(documentId: String) {
         net { repo.api().driveDelete(documentId) }
         known.remove(documentId)
+        LocalCopies.forget(context!!, documentId)
         notifyParent(documentId)
     }
 
@@ -175,6 +178,7 @@ class DriveProvider : DocumentsProvider() {
         val to = parent + displayName.replace('/', ' ') + if (folder) "/" else ""
         net { repo.api().driveMove(documentId, to) }
         known.remove(documentId)
+        LocalCopies.forget(context!!, documentId)
         notifyParent(documentId)
         return to
     }

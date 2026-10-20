@@ -120,16 +120,17 @@ class NoteEditor(
             "saveCopy" -> {
                 val target = p.getString("path")
                 val name = target.substringAfterLast('/').let { n -> n.substringBeforeLast('.', n) + " (my copy)" + (if ('.' in n) "." + n.substringAfterLast('.') else "") }
-                val free = freeName(parentOf(target), name)
-                api.driveWrite(parentOf(target) + free, p.getString("text").toByteArray(), "text/markdown; charset=utf-8")
-                JSONObject().put("name", free)
+                val text = p.getString("text").toByteArray()
+                val (at, _) = api.driveCreate(parentOf(target) + name) { api.driveWrite(it, text, "text/markdown; charset=utf-8", absent = true) }
+                JSONObject().put("name", at.substringAfterLast('/'))
             }
             "uploadImage" -> {
                 val folder = parentOf(p.getString("notePath"))
                 val dir = folder + "attachments/"
-                val name = freeName(dir, p.getString("name").replace('/', ' '))
-                api.driveWrite(dir + name, Base64.decode(p.getString("base64"), Base64.DEFAULT), p.optString("mimeType").ifBlank { null })
-                JSONObject().put("relativePath", "attachments/" + android.net.Uri.encode(name))
+                val bytes = Base64.decode(p.getString("base64"), Base64.DEFAULT)
+                val type = p.optString("mimeType").ifBlank { null }
+                val (at, _) = api.driveCreate(dir + p.getString("name").replace('/', ' ')) { api.driveWrite(it, bytes, type, absent = true) }
+                JSONObject().put("relativePath", "attachments/" + android.net.Uri.encode(at.substringAfterLast('/')))
             }
             "readImage" -> {
                 val f = api.driveRead(p.getString("path"))
@@ -196,16 +197,6 @@ class NoteEditor(
     private fun js(code: String) {
         if (destroyed) return
         main.post { if (!destroyed) webView.evaluateJavascript(code, null) }
-    }
-
-    private suspend fun freeName(folder: String, name: String): String {
-        val taken = runCatching { repo.api().driveFolder(folder).propertyEntries.map { it.name }.toSet() }.getOrDefault(emptySet())
-        val dot = name.lastIndexOf('.')
-        val (stem, ext) = if (dot > 0) name.substring(0, dot) to name.substring(dot) else name to ""
-        var free = name
-        var n = 2
-        while (free in taken) free = "$stem (${n++})$ext"
-        return free
     }
 
     companion object {

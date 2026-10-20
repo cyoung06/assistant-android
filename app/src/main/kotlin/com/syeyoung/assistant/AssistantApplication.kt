@@ -12,7 +12,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 class AssistantApplication : Application() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** For work that must finish even when the screen that started it is gone (a last save). */
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()

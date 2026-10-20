@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.sp
 import com.syeyoung.assistant.api.models.DriveEntry
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.drive.DriveProvider
+import com.syeyoung.assistant.drive.LocalCopies
 import com.syeyoung.assistant.notebook.Notebooks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -101,12 +102,17 @@ fun FilePreview(e: DriveEntry, fullScreen: Boolean, onClose: () -> Unit, onOpenW
     // Notes open to write in.
     if (kind == PreviewKind.MARKDOWN) return com.syeyoung.assistant.notes.NoteEditorPane(e.path, fullScreen, onClose)
     // The file, fetched into the cache (kept per version, so reopening it is instant).
-    var file by remember(e.path, e.modified) { mutableStateOf<File?>(null) }
-    var failed by remember(e.path, e.modified) { mutableStateOf<String?>(null) }
+    var file by remember(e.path, e.etag) { mutableStateOf<File?>(null) }
+    var failed by remember(e.path, e.etag) { mutableStateOf<String?>(null) }
     val needsFile = kind == PreviewKind.PDF || kind == PreviewKind.IMAGE || ((kind == PreviewKind.TEXT || kind == PreviewKind.MARKDOWN) && e.propertySize <= TEXT_LIMIT)
-    LaunchedEffect(e.path, e.modified) {
+    LaunchedEffect(e.path, e.etag) {
         if (!needsFile) return@LaunchedEffect
-        runCatching { if (kind == PreviewKind.PDF) flattened(context, e) else cached(context, e) }.onSuccess { file = it }.onFailure { failed = it.message ?: "Couldn't fetch it" }
+        runCatching { cached(context, e) }.onSuccess { file = it }.onFailure { failed = it.message ?: "Couldn't fetch it" }
+        // Then with the writing on it drawn in (PdfRenderer leaves annotations out), once that's ready.
+        if (kind == PreviewKind.PDF && file != null) {
+            runCatching { flattened(context, e) }.onSuccess { file = it }
+                .onFailure { x -> android.util.Log.w("FilePreview", "couldn't draw the writing on ${e.path}", x); failed = "Couldn't show the writing on it: ${x.message}" }
+        }
     }
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
@@ -154,34 +160,24 @@ private fun Elsewhere(e: DriveEntry, kind: PreviewKind, onOpenWith: () -> Unit) 
     }
 }
 
-/** Fetches a drive file into the cache (once per version). */
-suspend fun cached(context: Context, e: DriveEntry): File = withContext(Dispatchers.IO) {
-    val dir = File(context.cacheDir, "preview").apply { mkdirs() }
-    val f = File(dir, Integer.toHexString("${e.path}|${e.modified}".hashCode()) + "-" + e.name.replace('/', ' '))
-    if (!f.exists() || f.length() == 0L) {
-        val tmp = File(dir, f.name + ".part")
-        Repo.get(context).api().driveDownload(e.path, tmp)
-        tmp.renameTo(f)
-    }
-    f
-}
+/** A drive file as the drive has it now (its copy on this device; see [LocalCopies]). */
+suspend fun cached(context: Context, e: DriveEntry): File = LocalCopies.fetch(context, e.path).file
 
 /**
- * A drive PDF with its annotations (the writing done on it here) drawn into its pages, cached like
- * [cached]: PdfRenderer and many other viewers leave annotations out. The file itself if it has none.
+ * A drive PDF with its annotations (the writing done on it here) drawn into its pages, for
+ * PdfRenderer, which leaves annotations out; the file itself if it has none. Made once per version
+ * (checking a PDF that has none takes a moment, so the preview shows the file itself meanwhile).
  */
 suspend fun flattened(context: Context, e: DriveEntry): File = withContext(Dispatchers.IO) {
-    val f = cached(context, e)
-    val flat = File(f.parentFile, f.name + ".flat")
-    val plain = File(f.parentFile, f.name + ".plain")
-    when {
-        flat.exists() -> flat
-        plain.exists() -> f
-        else -> {
-            val tmp = File(f.parentFile, flat.name + ".part")
-            if (runCatching { com.syeyoung.assistant.notebook.Flatten.flatten(context, f, tmp) }.getOrDefault(false) && tmp.renameTo(flat)) flat
-            else { tmp.delete(); plain.createNewFile(); f }
-        }
+    val copy = LocalCopies.fetch(context, e.path)
+    val dir = File(context.cacheDir, "drawn").apply { mkdirs() }
+    val drawn = File(dir, Integer.toHexString("${e.path}|${copy.etag}".hashCode()) + ".pdf")
+    if (copy.etag != null && drawn.exists()) return@withContext drawn
+    val tmp = File(dir, drawn.name + ".part")
+    try {
+        if (com.syeyoung.assistant.notebook.Flatten.flatten(context, copy.file, tmp) && tmp.renameTo(drawn)) drawn else copy.file
+    } finally {
+        tmp.delete()
     }
 }
 
@@ -195,7 +191,9 @@ private fun PdfPages(file: File) {
     DisposableEffect(renderer) { onDispose { renderer.close() } }
     // PdfRenderer draws one page at a time.
     val lock = remember(renderer) { Mutex() }
-    val sizes = remember(renderer) { (0 until renderer.pageCount).map { i -> renderer.openPage(i).use { it.width to it.height } } }
+    // Each page's size as it's drawn (opening every page first is slow for a long book); until then, the first page's.
+    val first = remember(renderer) { if (renderer.pageCount == 0) 1 to 1 else renderer.openPage(0).use { it.width to it.height } }
+    val sizes = remember(renderer) { androidx.compose.runtime.mutableStateMapOf<Int, Pair<Int, Int>>() }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     val zoom = rememberTransformableState { change, pan, _ ->
@@ -209,13 +207,15 @@ private fun PdfPages(file: File) {
                 .graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y },
             contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            itemsIndexed(sizes) { i, (w, h) ->
+            items(renderer.pageCount) { i ->
+                val (w, h) = sizes[i] ?: first
                 var page by remember(i, widthPx) { mutableStateOf<Bitmap?>(null) }
                 LaunchedEffect(i, widthPx) {
                     page = withContext(Dispatchers.IO) {
                         lock.withLock {
                             renderer.openPage(i).use { p ->
-                                Bitmap.createBitmap(widthPx, (widthPx.toLong() * h / w).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888).also {
+                                sizes[i] = p.width to p.height
+                                Bitmap.createBitmap(widthPx, (widthPx.toLong() * p.height / p.width).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888).also {
                                     it.eraseColor(android.graphics.Color.WHITE)
                                     p.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                                 }
