@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -87,11 +88,15 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
     var state by remember(path) { mutableStateOf("loading") }
     var message by remember(path) { mutableStateOf<String?>(null) }
     var source by remember(path) { mutableStateOf(false) }
+    var editing by remember(path) { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     val editor = remember(path) {
         NoteEditor(context, path, onStatus = { s, m -> state = s; message = m }, onLink = { href, resolved -> follow(context, href, resolved) })
     }
-    DisposableEffect(editor) { onDispose { editor.destroy() } }
+    DisposableEffect(editor) {
+        editor.onEditing = { editing = it }
+        onDispose { editor.destroy() }
+    }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, editor) {
         val observer = LifecycleEventObserver { _, event ->
@@ -116,6 +121,11 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
                     statusText(state, message), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = if (state == "error" || state == "conflict") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            // A note opens as a preview; editing is asked for.
+            if (state != "readonly" && state != "loading") {
+                if (editing) androidx.compose.material3.TextButton({ editor.setEditing(false) }) { Text("Done") }
+                else androidx.compose.material3.TextButton({ editor.setEditing(true) }) { Icon(Icons.Filled.Edit, null, Modifier.padding(end = 6.dp)); Text("Edit") }
             }
             IconButton({ openWith(context, path) }) { Icon(Icons.AutoMirrored.Filled.OpenInNew, "Open with…") }
             Box {

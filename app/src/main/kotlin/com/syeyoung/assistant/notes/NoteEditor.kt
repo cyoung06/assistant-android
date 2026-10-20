@@ -50,6 +50,13 @@ class NoteEditor(
     private var source = false
     /** Setting text that wasn't typed (opening, another version): not an edit. */
     private var loading = true
+    /** Being edited (asked for: a note opens as a preview, everything rendered). */
+    var editing = false
+        private set
+    /** How the field takes typing, kept while it's a preview. */
+    private var keys: android.text.method.KeyListener? = null
+    /** Hears when editing starts or stops (the screen's Edit / Done). */
+    var onEditing: (Boolean) -> Unit = {}
 
     @SuppressLint("ClickableViewAccessibility")
     private val field: EditText = object : EditText(context) {
@@ -130,10 +137,12 @@ class NoteEditor(
             val opened = runCatching { document.open() }.getOrElse { e -> onStatus("error", e.message ?: "Couldn't open it"); return@launch }
             show(opened.text)
             field.isEnabled = true
-            // Opened at its start, as on the web.
+            // Opened as a preview, at its start; editing is asked for (Edit).
             field.setSelection(0)
             view.scrollTo(0, 0)
-            if (!document.readOnly) field.requestFocus()
+            setEditing(false)
+            // A draft from before is being edited already.
+            if (opened.state == "unsaved" || opened.state == "conflict") setEditing(true)
         }
     }
 
@@ -156,11 +165,34 @@ class NoteEditor(
         field.setBackgroundColor(Color.TRANSPARENT)
         val side = (style.paddingHorizontal * density).toInt()
         field.setPadding(side, (style.paddingTop * density).toInt(), side, field.paddingBottom)
-        if (document.readOnly) {
-            field.showSoftInputOnFocus = false
-            field.keyListener = null
+        restyle(structure = false)
+    }
+
+    /**
+     * Editing (the cursor and keyboard, Markdown shown where the cursor is) or a preview (all of it
+     * rendered, nothing to type into; links open with a tap). Leaving editing saves.
+     */
+    fun setEditing(on: Boolean) {
+        val on = on && !document.readOnly
+        if (keys == null) keys = field.keyListener
+        editing = on
+        field.keyListener = if (on) keys else null
+        field.isFocusable = on
+        field.isFocusableInTouchMode = on
+        field.isCursorVisible = on
+        field.showSoftInputOnFocus = on
+        val input = field.context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+        if (on) {
+            field.requestFocus()
+            input.showSoftInput(field, 0)
+        } else {
+            input.hideSoftInputFromWindow(field.windowToken, 0)
+            field.clearFocus()
+            slash.dismiss()
+            scope.launch { document.save() }
         }
         restyle(structure = false)
+        onEditing(on)
     }
 
     /** Shows [text] as the note (opened, or another version), keeping the cursor where it can. */
@@ -177,7 +209,7 @@ class NoteEditor(
         val preview = preview ?: return
         val text = field.text ?: return
         if (structure) spans = markdownSpans(text.toString())
-        val selection = if (field.hasFocus() && !document.readOnly) minOf(field.selectionStart, field.selectionEnd)..maxOf(field.selectionStart, field.selectionEnd) else null
+        val selection = if (editing && field.hasFocus()) minOf(field.selectionStart, field.selectionEnd)..maxOf(field.selectionStart, field.selectionEnd) else null
         preview.apply(text, spans, selection, source)
     }
 
@@ -188,7 +220,8 @@ class NoteEditor(
         val at = layout.getOffsetForHorizontal(layout.getLineForVertical(y.toInt()), x)
         val text = field.text
         text.getSpans(at, at, LivePreview.Checkbox::class.java).firstOrNull()?.let { box ->
-            if (document.readOnly) return true
+            // Ticking a task is an edit: only while editing.
+            if (!editing) return true
             val start = text.getSpanStart(box)
             val bracket = text.indexOf('[', start).takeIf { it in start until text.getSpanEnd(box) } ?: return true
             text.replace(bracket + 1, bracket + 2, if (box.checked) " " else "x")
@@ -196,7 +229,7 @@ class NoteEditor(
         }
         text.getSpans(at, at, LivePreview.Link::class.java).firstOrNull()?.let { link ->
             // Being edited (its address showing): a tap places the cursor instead.
-            if (field.hasFocus() && field.selectionStart in text.getSpanStart(link)..text.getSpanEnd(link)) return false
+            if (editing && field.hasFocus() && field.selectionStart in text.getSpanStart(link)..text.getSpanEnd(link)) return false
             onLink(link.url, resolve(link.url))
             return true
         }
