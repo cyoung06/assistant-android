@@ -254,7 +254,13 @@ class NoteEditor(
         val query = match.groupValues[1].trim().lowercase()
         offered = com.syeyoung.assistant.core.slashItems().filter { item -> query.isEmpty() || "${item.label} ${item.keywords}".lowercase().split(' ').any { it.startsWith(query) } }
         if (offered.isEmpty()) return slash.dismiss()
-        slash.setAdapter(android.widget.ArrayAdapter(field.context, android.R.layout.simple_list_item_1, offered.map { it.label }))
+        slash.setAdapter(menuAdapter(offered.map { it.label }))
+        slash.setBackgroundDrawable(android.graphics.drawable.GradientDrawable().apply {
+            val density = field.resources.displayMetrics.density
+            setColor(style.background.toInt())
+            setStroke(density.toInt().coerceAtLeast(1), style.rule.toInt())
+            cornerRadius = 8 * density
+        })
         slash.setOnItemClickListener { _, _, i, _ -> insertBlock(offered[i]) }
         // Below the cursor's line.
         val layout = field.layout ?: return
@@ -263,6 +269,21 @@ class NoteEditor(
         slash.verticalOffset = layout.getLineBottom(line) + field.totalPaddingTop - field.height
         slash.show()
         slash.listView?.setSelection(0)
+    }
+
+    /** The "/" menu's rows as the web shows them: the note's font at 14px, padded 5 by 12, in its colours. */
+    private fun menuAdapter(labels: List<String>) = object : android.widget.ArrayAdapter<String>(field.context, 0, labels) {
+        override fun getView(position: Int, convertView: android.view.View?, parent: ViewGroup): android.view.View {
+            val density = context.resources.displayMetrics.density
+            val row = (convertView as? android.widget.TextView) ?: android.widget.TextView(context).apply {
+                setPadding((12 * density).toInt(), (5 * density).toInt(), (12 * density).toInt(), (5 * density).toInt())
+                setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14f)
+            }
+            row.text = getItem(position)
+            row.typeface = fonts?.text
+            row.setTextColor(style.text.toInt())
+            return row
+        }
     }
 
     private fun insertBlock(item: com.syeyoung.assistant.core.SlashItem) {
