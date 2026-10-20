@@ -7,12 +7,13 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
-import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.syeyoung.assistant.data.ApiException
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.drive.DriveProvider
@@ -63,26 +64,33 @@ class NoteEditor(
             // Nothing navigates away from the editor: links go to the app.
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
         }
-        addJavascriptInterface(Host(), "AssistantAndroid")
-        loadUrl("https://appassets.androidplatform.net/assets/editor/embed.html")
+        // The page's messages, from the editor's own page only (not from anything framed in a note).
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(this, "AssistantAndroid", setOf(ORIGIN)) { _, message, _, isMainFrame, _ ->
+                if (isMainFrame) message.data?.let(::postMessage)
+            }
+        }
+        loadUrl("$ORIGIN/assets/editor/embed.html")
     }
 
-    inner class Host {
-        @JavascriptInterface
-        fun postMessage(json: String) {
-            val m = runCatching { JSONObject(json) }.getOrNull() ?: return
-            // Requests are numbered by the page; notices have no id.
-            val id = if (m.has("id") && !m.isNull("id")) m.optLong("id", -1).takeIf { it >= 0 } else null
-            val payload = m.optJSONObject("payload") ?: JSONObject()
-            main.post { if (!destroyed) receive(m.optString("type"), id, payload) }
-        }
+    private fun postMessage(json: String) {
+        val m = runCatching { JSONObject(json) }.getOrNull() ?: return
+        // Requests are numbered by the page; notices have no id.
+        val id = if (m.has("id") && !m.isNull("id")) m.optLong("id", -1).takeIf { it >= 0 } else null
+        val payload = m.optJSONObject("payload") ?: JSONObject()
+        if (!destroyed) receive(m.optString("type"), id, payload)
     }
 
     private fun receive(type: String, id: Long?, p: JSONObject) {
         when (type) {
             "ready" -> { ready = true; open() }
             "status" -> onStatus(p.optString("state"), p.optString("message").takeIf { p.has("message") && !p.isNull("message") })
-            "openLink" -> onLink(p.optString("href"), p.optString("resolvedPath").takeIf { p.has("resolvedPath") && !p.isNull("resolvedPath") && it.isNotBlank() })
+            "openLink" -> {
+                val resolved = p.optString("resolvedPath").takeIf { p.has("resolvedPath") && !p.isNull("resolvedPath") && it.isNotBlank() }
+                val href = p.optString("href")
+                // Drive files, or the web and mail: nothing else (no intent:, file:, content:).
+                if (resolved != null || android.net.Uri.parse(href).scheme?.lowercase() in setOf("http", "https", "mailto")) onLink(href, resolved)
+            }
             "flushed" -> flushed.remove(p.optInt("n"))?.invoke()
             else -> if (id != null) answer(id) { request(type, p) }
         }
@@ -103,6 +111,8 @@ class NoteEditor(
             "save" -> {
                 if (readOnly) error("This file is kept as PLMS has it")
                 val target = p.getString("path")
+                // Only the note that's open here.
+                require(target == path) { "Not the note that's open" }
                 val base = if (p.optBoolean("force")) null else p.optString("etag").takeIf { p.has("etag") && !p.isNull("etag") && it.isNotBlank() }
                 try {
                     val tag = api.driveWrite(target, p.getString("text").toByteArray(), "text/markdown; charset=utf-8", base)
@@ -189,7 +199,7 @@ class NoteEditor(
         flush {
             destroyed = true
             scope.cancel()
-            webView.removeJavascriptInterface("AssistantAndroid")
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) WebViewCompat.removeWebMessageListener(webView, "AssistantAndroid")
             webView.destroy()
         }
     }
@@ -200,6 +210,9 @@ class NoteEditor(
     }
 
     companion object {
+        /** Where the editor's page is served from (by [WebViewAssetLoader], inside the app). */
+        private const val ORIGIN = "https://appassets.androidplatform.net"
+
         fun parentOf(path: String) = path.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
         fun isNote(name: String) = Regex("\\.(md|markdown)$", RegexOption.IGNORE_CASE).containsMatchIn(name)
     }
