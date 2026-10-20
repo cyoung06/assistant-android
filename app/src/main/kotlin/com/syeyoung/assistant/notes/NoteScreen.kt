@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -125,9 +127,29 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
             }
         }
         HorizontalDivider()
+        if (state == "conflict") ConflictBanner(editor)
         androidx.compose.runtime.key(editor) {
-            AndroidView({ editor.webView.apply { (parent as? android.view.ViewGroup)?.removeView(this) } }, Modifier.fillMaxSize().imePadding())
+            // The text column at most as wide as the web's, centred.
+            Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.TopCenter) {
+                AndroidView({ editor.view.apply { (parent as? android.view.ViewGroup)?.removeView(this) } }, Modifier.fillMaxHeight().widthIn(max = 808.dp).fillMaxWidth())
+            }
         }
+    }
+}
+
+/** The note changed elsewhere since it was opened: what to keep (as the web editor asks). */
+@Composable
+private fun ConflictBanner(editor: NoteEditor) {
+    val context = LocalContext.current
+    Row(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer).padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+    ) {
+        Text("This note was changed somewhere else since you opened it.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+        androidx.compose.material3.TextButton({ editor.keepMine() }) { Text("Keep mine") }
+        androidx.compose.material3.TextButton({ editor.loadTheirs() }) { Text("Load theirs") }
+        androidx.compose.material3.TextButton({ editor.saveCopy { name -> Toast.makeText(context, "Yours is saved as $name", Toast.LENGTH_LONG).show() } }) { Text("Save mine as a copy") }
     }
 }
 
