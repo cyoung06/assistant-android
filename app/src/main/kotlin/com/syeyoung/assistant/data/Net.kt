@@ -158,8 +158,14 @@ class Api(endpoint: Endpoint) {
     /** A small drive file (a note, an image it shows): its bytes, version and type. */
     class DriveFile(val bytes: ByteArray, val etag: String?, val type: String?)
 
-    suspend fun driveRead(path: String): DriveFile =
-        http.prepareGet("$base/api/v1/drive/file?path=${drivePath(path)}").execute { r ->
+    suspend fun driveRead(path: String): DriveFile = driveReadIfChanged(path, null)!!
+
+    /** A small drive file, unless it's still version [ifNoneMatch] (then null: nothing is sent). */
+    suspend fun driveReadIfChanged(path: String, ifNoneMatch: String?): DriveFile? =
+        http.prepareGet("$base/api/v1/drive/file?path=${drivePath(path)}") {
+            if (ifNoneMatch != null) header(HttpHeaders.IfNoneMatch, ifNoneMatch)
+        }.execute { r ->
+            if (r.status == HttpStatusCode.NotModified) return@execute null
             if (!r.status.isSuccess()) throw ApiException(r.status.value, "HTTP ${r.status.value}")
             DriveFile(r.bodyAsChannel().toInputStream().use { it.readBytes() }, etagOf(r), r.headers[HttpHeaders.ContentType])
         }
