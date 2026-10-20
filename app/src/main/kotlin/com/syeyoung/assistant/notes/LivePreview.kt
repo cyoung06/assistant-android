@@ -227,7 +227,8 @@ class LivePreview(
     private inner class Picture(val drawing: Painted?, val pad: Float, val url: String? = null, val alt: String = "") : ReplacementSpan(), Ours {
         /** The picture's size here: shrunk to fit the column (and, for images, 60% of the visible height). */
         private fun size(): Pair<Float, Float>? {
-            val (w, h) = drawing?.let { it.width to it.height } ?: url?.let(image)?.let { it.width.toFloat() to it.height.toFloat() } ?: return null
+            // Diagrams are laid out in CSS pixels (dp here); images are shown pixel for pixel, as browsers do.
+            val (w, h) = drawing?.let { px(it.width) to px(it.height) } ?: url?.let(image)?.let { it.width.toFloat() to it.height.toFloat() } ?: return null
             val scale = minOf(1f, width() / w, if (url != null) viewport() * 0.6f / h else Float.MAX_VALUE)
             return w * scale to h * scale
         }
