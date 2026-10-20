@@ -41,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -129,8 +130,9 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
         HorizontalDivider()
         if (state == "conflict") ConflictBanner(editor)
         androidx.compose.runtime.key(editor) {
-            // The text column at most as wide as the web's, centred.
-            Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.TopCenter) {
+            // The text column at most as wide as the web's, centred; nothing drawn outside the pane
+            // (Compose doesn't clip what it holds unless asked).
+            Box(Modifier.fillMaxSize().imePadding().clipToBounds(), contentAlignment = Alignment.TopCenter) {
                 AndroidView({ editor.view.apply { (parent as? android.view.ViewGroup)?.removeView(this) } }, Modifier.fillMaxHeight().widthIn(max = 808.dp).fillMaxWidth())
             }
         }
