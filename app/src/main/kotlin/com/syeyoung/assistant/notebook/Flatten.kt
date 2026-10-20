@@ -14,6 +14,9 @@ import java.io.File
  * them anywhere. Links and popups stay annotations.
  */
 object Flatten {
+    /** Changes whenever what [flatten] makes does: copies made by another version are made again. */
+    const val VERSION = 2
+
     /** [pdf] with its annotations drawn in, written to [out]; false (and nothing written) if it has none to draw. */
     fun flatten(context: Context, pdf: File, out: File): Boolean {
         PDFBoxResourceLoader.init(context.applicationContext)

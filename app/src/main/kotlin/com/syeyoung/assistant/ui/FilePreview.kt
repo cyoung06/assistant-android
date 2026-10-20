@@ -67,6 +67,7 @@ import com.syeyoung.assistant.drive.DriveProvider
 import com.syeyoung.assistant.drive.LocalCopies
 import com.syeyoung.assistant.notebook.Notebooks
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -170,7 +171,11 @@ suspend fun cached(context: Context, e: DriveEntry): File = LocalCopies.fetch(co
  */
 suspend fun flattened(context: Context, e: DriveEntry): File = withContext(Dispatchers.IO) {
     val copy = LocalCopies.fetch(context, e.path)
-    val dir = File(context.cacheDir, "drawn").apply { mkdirs() }
+    // Kept per version of the file and of the drawing code (copies an older version made may be wrong).
+    val drawnDirs = File(context.cacheDir, "drawn").apply { mkdirs() }
+    val current = "v${com.syeyoung.assistant.notebook.Flatten.VERSION}"
+    drawnDirs.listFiles()?.filter { it.name != current }?.forEach { it.deleteRecursively() }
+    val dir = File(drawnDirs, current).apply { mkdirs() }
     val drawn = File(dir, Integer.toHexString("${e.path}|${copy.etag}".hashCode()) + ".pdf")
     if (copy.etag != null && drawn.exists()) return@withContext drawn
     val tmp = File(dir, drawn.name + ".part")
@@ -188,9 +193,11 @@ private fun PdfPages(file: File) {
         runCatching { PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)) }
     }
     val renderer = opened.getOrNull() ?: return Text("Couldn't read this PDF", color = MaterialTheme.colorScheme.error)
-    DisposableEffect(renderer) { onDispose { renderer.close() } }
-    // PdfRenderer draws one page at a time.
+    // PdfRenderer draws one page at a time, and can't be closed while a page is open.
     val lock = remember(renderer) { Mutex() }
+    val app = LocalContext.current.applicationContext as com.syeyoung.assistant.AssistantApplication
+    // Closed once the page being drawn (if any) is done: that goes on after the preview has moved on.
+    DisposableEffect(renderer) { onDispose { app.scope.launch(Dispatchers.IO) { lock.withLock { renderer.close() } } } }
     // Each page's size as it's drawn (opening every page first is slow for a long book); until then, the first page's.
     val first = remember(renderer) { if (renderer.pageCount == 0) 1 to 1 else renderer.openPage(0).use { it.width to it.height } }
     val sizes = remember(renderer) { androidx.compose.runtime.mutableStateMapOf<Int, Pair<Int, Int>>() }
@@ -209,8 +216,9 @@ private fun PdfPages(file: File) {
         ) {
             items(renderer.pageCount) { i ->
                 val (w, h) = sizes[i] ?: first
-                var page by remember(i, widthPx) { mutableStateOf<Bitmap?>(null) }
-                LaunchedEffect(i, widthPx) {
+                // Drawn again from another file (the one with the writing drawn in, once it's ready).
+                var page by remember(renderer, i, widthPx) { mutableStateOf<Bitmap?>(null) }
+                LaunchedEffect(renderer, i, widthPx) {
                     page = withContext(Dispatchers.IO) {
                         lock.withLock {
                             renderer.openPage(i).use { p ->
