@@ -11,6 +11,8 @@ import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
+import android.view.ViewGroup.MarginLayoutParams
+import android.widget.FrameLayout
 import android.widget.EditText
 import android.widget.ScrollView
 import com.syeyoung.assistant.core.NoteStyle
@@ -75,17 +77,17 @@ class NoteEditor(
 
     /**
      * The note: the text at its full height in a scroll view, which keeps the cursor in sight and,
-     * as on the web, has room below the last line (padding a text field would clip).
+     * as on the web, has room below the last line (a margin under the text: padding would clip it).
      */
     val view: ScrollView = object : ScrollView(context) {
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
             super.onSizeChanged(w, h, oldw, oldh)
-            setPadding(0, 0, 0, h * 2 / 5)
+            (field.layoutParams as MarginLayoutParams).bottomMargin = h * 2 / 5
+            field.requestLayout()
         }
     }.apply {
         isFillViewport = true
-        clipToPadding = false
-        addView(field, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(field, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
     init {

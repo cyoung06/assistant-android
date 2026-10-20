@@ -193,7 +193,8 @@ class LivePreview(
     private class Bullet(val color: UInt) : ReplacementSpan(), Ours {
         override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?) = (paint.textSize * 0.9f).toInt()
         override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
-            val p = Paint(paint).apply { this.color = color.toInt(); typeface = Typeface.create(paint.typeface, 700, false) }
+            val bulletColor = color.toInt()
+            val p = Paint(paint).apply { color = bulletColor; typeface = Typeface.create(paint.typeface, 700, false) }
             canvas.drawText("•", x + (paint.textSize * 0.9f - p.measureText("•")) / 2f, y.toFloat(), p)
         }
     }
@@ -227,7 +228,8 @@ class LivePreview(
     private class RuleLine(val color: UInt, val width: () -> Int) : ReplacementSpan(), Ours {
         override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?) = width()
         override fun draw(canvas: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
-            val p = Paint().apply { this.color = color.toInt(); strokeWidth = 1f * (paint.textSize / 16f).coerceAtLeast(1f) }
+            val lineColor = color.toInt()
+            val p = Paint().apply { color = lineColor; strokeWidth = 1f * (paint.textSize / 16f).coerceAtLeast(1f) }
             val mid = (top + bottom) / 2f
             canvas.drawLine(x, mid, x + width(), mid, p)
         }
