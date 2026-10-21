@@ -50,6 +50,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Folder
@@ -114,6 +115,8 @@ private const val PROJECTS = "Projects/"
 
 /** Where each storage was left (its open folder), and which storage Files had open: kept while the app runs, so switching away and back doesn't start over. */
 internal object FilesNav {
+    /** Back to the overview of every storage (from inside one). */
+    fun showAll() { open.clear() }
     /** The trash, showing (see [TrashScreen]). */
     var trash by mutableStateOf(false)
     val folders = mutableMapOf<String, String>()
@@ -308,6 +311,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                     // Where we are, from the project's top.
                     val parts = path.removePrefix(root).split('/').filter { it.isNotEmpty() }
                     Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                        if (withCrumbs && onExit != null) IconButton(onExit) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "All storage") }
                         if (withCrumbs || parts.isEmpty()) Crumb(rootName) { goTo(root) }
                         parts.forEachIndexed { i, p ->
                             if (withCrumbs || i > 0) Text("›", color = MaterialTheme.colorScheme.outline)
@@ -399,7 +403,8 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
             var treeWidth by remember { mutableStateOf(prefs.getFloat("files.treeWidth", 280f).dp) }
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.width(treeWidth).fillMaxHeight()) {
-                    Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().padding(start = if (onExit != null) 0.dp else 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        onExit?.let { IconButton(it) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "All storage") } }
                         Text(rootName, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         IconButton({ FilesNav.changes++ }) { Icon(Icons.Filled.Refresh, "Refresh") }
                         IconButton({ FilesNav.trash = true }) { Icon(Icons.Filled.Delete, "Trash") }

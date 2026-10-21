@@ -289,8 +289,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private val pagePaint = Paint().apply { color = Color.WHITE }
     private val shadowPaint = Paint().apply { color = 0x22000000 }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val linkFill = Paint().apply { color = 0x141E5BD8 }
-    private val linkLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC1E5BD8.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.5f * resources.displayMetrics.density }
+    private val linkFill = Paint().apply { color = 0x0F4A8BF5 }
+    private val linkLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x804A8BF5.toInt(); style = Paint.Style.STROKE; strokeWidth = 1f * resources.displayMetrics.density }
     private val drawMatrix = Matrix()
     private val hitRect = RectF()
     private val hitPaint = Paint().apply { color = 0x55FFD600 }

@@ -170,7 +170,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                 )
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            NavigationDrawerItem(label = { Text("Files") }, icon = { Icon(Icons.Filled.Folder, null) }, selected = screen == Screen.Files, onClick = { screen = Screen.Files; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
+            NavigationDrawerItem(label = { Text("Files") }, icon = { Icon(Icons.Filled.Folder, null) }, selected = screen == Screen.Files, onClick = { if (screen == Screen.Files) FilesNav.showAll(); screen = Screen.Files; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
             NavigationDrawerItem(label = { Text("Notebooks") }, icon = { Icon(Icons.Filled.Draw, null) }, selected = screen == Screen.Notebooks, onClick = { screen = Screen.Notebooks; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
             NavigationDrawerItem(label = { Text("Calendar") }, icon = { Icon(Icons.Filled.CalendarMonth, null) }, selected = screen == Screen.Calendar, onClick = { screen = Screen.Calendar; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
             NavigationDrawerItem(label = { Text("Settings") }, icon = { Icon(Icons.Filled.Settings, null) }, selected = screen == Screen.Settings, onClick = { screen = Screen.Settings; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
