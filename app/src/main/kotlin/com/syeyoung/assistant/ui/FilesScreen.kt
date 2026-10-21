@@ -113,7 +113,9 @@ import java.util.UUID
 private const val PROJECTS = "Projects/"
 
 /** Where each storage was left (its open folder), and which storage Files had open: kept while the app runs, so switching away and back doesn't start over. */
-private object FilesNav {
+internal object FilesNav {
+    /** The trash, showing (see [TrashScreen]). */
+    var trash by mutableStateOf(false)
     val folders = mutableMapOf<String, String>()
     /** The storage each pane has open (0: the left or only one, 1: the right). */
     val open = androidx.compose.runtime.mutableStateMapOf<Int, Pair<String, String>>()
@@ -155,6 +157,7 @@ private fun SplitButton() {
 /** Each project's storage, as tiles in the project's colour; tap one to open it. */
 @Composable
 fun FilesScreen(pane: Int = 0) {
+    if (FilesNav.trash) TrashScreen { FilesNav.trash = false }
     val repo = Repo.get(LocalContext.current)
     val state by repo.state.collectAsStateCompat()
     val open = FilesNav.open[pane]
@@ -317,6 +320,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                     }
                     if (withCrumbs) {
                         IconButton({ FilesNav.changes++ }) { Icon(Icons.Filled.Refresh, "Refresh") }
+                        IconButton({ FilesNav.trash = true }) { Icon(Icons.Filled.Delete, "Trash") }
                         SplitButton()
                     }
                 }
@@ -398,6 +402,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(rootName, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         IconButton({ FilesNav.changes++ }) { Icon(Icons.Filled.Refresh, "Refresh") }
+                        IconButton({ FilesNav.trash = true }) { Icon(Icons.Filled.Delete, "Trash") }
                         SplitButton()
                     }
                     FolderTree(root, rootName, path, selected?.path, expanded, actions, drag, drop, onRoot = { goTo(root) })
@@ -446,7 +451,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
 }
 
 /** The folder a drive path is in. */
-private fun parentOf(path: String) = path.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
+internal fun parentOf(path: String) = path.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
 
 /** Project folders (and Projects/ itself) follow the projects: not renamed, moved or deleted from here. */
 private fun fixedPath(path: String) = path == PROJECTS || (path.startsWith(PROJECTS) && path.trimEnd('/').count { it == '/' } <= 1)
@@ -467,7 +472,6 @@ class EntryActions(
     /** Whose menu is open, and where (the same entry shows in the tree and in its folder: the menu drops from the one pressed). */
     var menuFor by mutableStateOf<Pair<String, String>?>(null)
     var renaming by mutableStateOf<DriveEntry?>(null)
-    var deleting by mutableStateOf<DriveEntry?>(null)
     var saving: DriveEntry? = null
 
     fun menu(e: DriveEntry, where: String) { menuFor = e.path to where }
@@ -513,7 +517,11 @@ class EntryActions(
 
     fun rename(e: DriveEntry, name: String) = run(null) { repo.api().driveMove(e.path, parentOf(e.path) + name + if (e.folder) "/" else "") }
 
-    fun delete(e: DriveEntry) = run("Deleting…") { repo.api().driveDelete(e.path) }
+    /** To the trash (kept 30 days; put back from Trash): no asking first. */
+    fun delete(e: DriveEntry) = run("Moving to Trash…") {
+        repo.api().driveDelete(e.path)
+        withContext(Dispatchers.Main) { Toast.makeText(context, "Moved ${e.name} to Trash", Toast.LENGTH_SHORT).show() }
+    }
 
     fun copyPath(e: DriveEntry) {
         val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
@@ -542,15 +550,6 @@ class EntryActions(
                 renaming = null
                 if (name != null && name != e.name) rename(e, name)
             }
-        }
-        deleting?.let { e ->
-            AlertDialog(
-                onDismissRequest = { deleting = null },
-                title = { Text("Delete ${e.name}?") },
-                text = { Text(if (e.folder) "The folder and everything in it are deleted." else "It's deleted from the drive.") },
-                confirmButton = { TextButton({ deleting = null; delete(e) }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
-                dismissButton = { TextButton({ deleting = null }) { Text("Cancel") } },
-            )
         }
     }
 }
@@ -603,7 +602,7 @@ private fun EntryMenu(e: DriveEntry, actions: EntryActions, where: String) {
         androidx.compose.material3.HorizontalDivider()
         Item("Copy path", Icons.Filled.Link) { actions.copyPath(e) }
         if (!e.folder) Item("Save to device", Icons.Filled.Download) { actions.saveToDevice(e) }
-        if (changeable) Item("Delete", Icons.Filled.Delete, MaterialTheme.colorScheme.error) { actions.deleting = e }
+        if (changeable) Item("Move to Trash", Icons.Filled.Delete, MaterialTheme.colorScheme.error) { actions.delete(e) }
     }
 }
 

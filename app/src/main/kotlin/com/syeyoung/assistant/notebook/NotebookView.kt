@@ -289,6 +289,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private val pagePaint = Paint().apply { color = Color.WHITE }
     private val shadowPaint = Paint().apply { color = 0x22000000 }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val linkFill = Paint().apply { color = 0x141E5BD8 }
+    private val linkLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC1E5BD8.toInt(); style = Paint.Style.STROKE; strokeWidth = 1.5f * resources.displayMetrics.density }
     private val drawMatrix = Matrix()
     private val hitRect = RectF()
     private val hitPaint = Paint().apply { color = 0x55FFD600 }
@@ -351,6 +353,12 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
             if (level > 0) drawTiles(null, i, 0, r, r, request = true, want, center)
 
             pageMatrix(i, drawMatrix)
+            // The PDF's links, boxed in blue so it's clear where a tap goes.
+            for (l in links) if (l.page == i) {
+                hitRect.set(l.rect); drawMatrix.mapRect(hitRect)
+                canvas.drawRect(hitRect, linkFill)
+                canvas.drawRect(hitRect, linkLine)
+            }
             for (h in hits) if (h.page == i) for (b in h.boxes) {
                 hitRect.set(b); drawMatrix.mapRect(hitRect)
                 canvas.drawRect(hitRect, if (h === focusedHit) focusPaint else hitPaint)

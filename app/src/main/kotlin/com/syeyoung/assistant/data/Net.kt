@@ -43,6 +43,7 @@ import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.client.statement.bodyAsText
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -73,6 +74,9 @@ class ApiException(val status: Int, message: String) : Exception(message)
 
 /** Where the app reaches the server: directly (tailnet VPN on), or through the embedded Tailscale bridge. */
 data class Endpoint(val baseUrl: String, val headers: Map<String, String> = emptyMap())
+
+/** Something in the drive's trash: where it was ([path]; a folder's ends with "/"), and when it was deleted. */
+data class Trashed(val id: String, val path: String, val name: String, val folder: Boolean, val size: Long, val deletedAt: java.time.Instant)
 
 /** The API: the generated client for most calls, plain Ktor for merge patches and uploads. */
 class Api(endpoint: Endpoint) {
@@ -269,7 +273,27 @@ class Api(endpoint: Endpoint) {
         send { http.post("$base/api/v1/drive/copy?from=${drivePath(from)}&to=${drivePath(to)}") }.bodyAsText()
             .let { kotlinx.serialization.json.Json.parseToJsonElement(it).jsonObject["path"]?.jsonPrimitive?.content ?: to }
 
+    /** Deletes a drive file or folder: to the trash (kept 30 days, see [driveTrash]). */
     suspend fun driveDelete(path: String) = send { http.delete("$base/api/v1/drive/file?path=${drivePath(path)}") }.let { }
+
+    /** What's in the drive's trash, latest first. */
+    suspend fun driveTrash(): List<Trashed> =
+        kotlinx.serialization.json.Json.parseToJsonElement(send { http.get("$base/api/v1/drive/trash") }.bodyAsText()).jsonArray.map { e ->
+            val o = e.jsonObject
+            Trashed(
+                o["id"]!!.jsonPrimitive.content, o["path"]!!.jsonPrimitive.content, o["name"]!!.jsonPrimitive.content,
+                o["folder"]!!.jsonPrimitive.content.toBoolean(), o["size"]!!.jsonPrimitive.content.toLong(),
+                java.time.Instant.parse(o["deletedAt"]!!.jsonPrimitive.content),
+            )
+        }
+
+    /** Puts [id] back where it was (numbered if that name's taken); where it went. */
+    suspend fun driveRestore(id: String): String =
+        send { http.post("$base/api/v1/drive/trash/$id/restore") }.bodyAsText()
+            .let { kotlinx.serialization.json.Json.parseToJsonElement(it).jsonObject["path"]?.jsonPrimitive?.content ?: "" }
+
+    suspend fun drivePurge(id: String) = send { http.delete("$base/api/v1/drive/trash/$id") }.let { }
+    suspend fun driveEmptyTrash() = send { http.delete("$base/api/v1/drive/trash") }.let { }
 
     suspend fun download(id: UUID): ByteArray = send { http.get("$base/api/v1/attachments/$id") }.body()
 
