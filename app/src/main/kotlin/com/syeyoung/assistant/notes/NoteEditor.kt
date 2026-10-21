@@ -131,6 +131,12 @@ class NoteEditor(
             override fun onSingleTapUp(e: MotionEvent): Boolean = tapped(e)
         })
         field.setOnTouchListener { _, e -> taps.onTouchEvent(e) }
+        // Images pasted, dropped or sent by the keyboard: uploaded and linked (the rest is pasted as text).
+        ViewCompat.setOnReceiveContentListener(field, arrayOf("image/*")) { _, payload ->
+            val split = payload.partition { item -> item.uri?.let { field.context.contentResolver.getType(it)?.startsWith("image/") } == true }
+            split.first?.clip?.let { clip -> for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let(::insertImage) }
+            split.second
+        }
         scope.launch {
             fonts = withContext(Dispatchers.IO) { NoteCore.fonts(context) }
             field.typeface = fonts!!.text
