@@ -23,7 +23,12 @@ import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
+import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
+import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionURI
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAppearanceStream
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDNamedDestination
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
@@ -37,6 +42,9 @@ import java.util.Locale
  * as standard PDF ink annotations, drawn from the stroke's exact shape so any reader shows them as
  * written. Adding and deleting pages changes the base.
  */
+/** A link in the PDF: on [page] at [rect] (points), to a web address ([uri]) or to page [target]. */
+data class PdfLink(val page: Int, val rect: android.graphics.RectF, val uri: String?, val target: Int?)
+
 class NotebookFile private constructor(private val context: Context, var uri: Uri, val base: File) {
 
     companion object {
@@ -52,7 +60,7 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
         private val IMAGE_TYPE = COSName.getPDFName("AssistantImageType")
         private val IMAGE_CROP = COSName.getPDFName("AssistantImageCrop")
 
-        class Opened(val file: NotebookFile, val strokes: List<InkStroke>, val images: List<NoteImage>, val bookmarks: Set<Int>, val sizes: List<android.util.SizeF>)
+        class Opened(val file: NotebookFile, val strokes: List<InkStroke>, val images: List<NoteImage>, val bookmarks: Set<Int>, val sizes: List<android.util.SizeF>, val links: List<PdfLink>)
 
         /** How many backups (the PDF as each session found it) are kept per notebook. */
         private const val BACKUPS = 5
@@ -107,9 +115,10 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
                     }
                 }
                 val bookmarks = takeBookmarks(doc)
+                val links = linksOf(doc)
                 doc.save(base)
                 original.delete()
-                return Opened(NotebookFile(context, uri, base), strokes, images, bookmarks, sizes)
+                return Opened(NotebookFile(context, uri, base), strokes, images, bookmarks, sizes, links)
             }
         }
 
@@ -132,6 +141,30 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
             }
             doc.documentCatalog.documentOutline = if (kept.isEmpty()) null else fresh
             return pages
+        }
+
+        /**
+         * The PDF's links: where each is on its page (points from the crop box's top-left, as images
+         * are placed), and a web address or a page of this PDF to go to. Links on turned pages are
+         * placed as if unturned.
+         */
+        private fun linksOf(doc: PDDocument): List<PdfLink> = buildList {
+            doc.pages.forEachIndexed { index, page ->
+                val crop = page.cropBox
+                val annotations = runCatching { page.annotations }.getOrNull() ?: return@forEachIndexed
+                for (link in annotations.filterIsInstance<PDAnnotationLink>()) runCatching {
+                    val r = link.rectangle ?: return@runCatching
+                    val rect = android.graphics.RectF(r.lowerLeftX - crop.lowerLeftX, crop.upperRightY - r.upperRightY, r.upperRightX - crop.lowerLeftX, crop.upperRightY - r.lowerLeftY)
+                    val action = link.action
+                    val uri = (action as? PDActionURI)?.uri
+                    val target = when (val dest = (action as? PDActionGoTo)?.destination ?: link.destination) {
+                        is PDPageDestination -> dest.retrievePageNumber()
+                        is PDNamedDestination -> doc.documentCatalog.findNamedDestinationPage(dest)?.retrievePageNumber()
+                        else -> null
+                    }?.takeIf { it in 0 until doc.numberOfPages }
+                    if (uri != null || target != null) add(PdfLink(index, rect, uri, target))
+                }.onFailure { android.util.Log.w("NotebookFile", "a link on page ${index + 1} left out: $it") }
+            }
         }
 
         /** A page's size in points as PdfRenderer reports it: its crop box, turned with the page. */

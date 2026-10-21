@@ -87,6 +87,13 @@ class NotebookActivity : ComponentActivity() {
             onSelectionChanged = { img -> ui.imageSelected = hasSelection; ui.groupSelected = selectionIsGroup; if (img == null) ui.cropping = false }
             onSelectionFrame = { r -> ui.selectionFrame = r }
             onLongPressEmpty = { x, y -> ui.pasteAt = android.graphics.PointF(x, y) }
+            // A link in the PDF: its page here, a web address in the browser.
+            onLink = { link ->
+                link.target?.let { goTo(it) } ?: link.uri?.let { uri ->
+                    runCatching { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri))) }
+                        .onFailure { Toast.makeText(this@NotebookActivity, "Couldn't open $uri", Toast.LENGTH_SHORT).show() }
+                }
+            }
             onTouchStart = { ui.pasteAt = null }
         }
         ui.applyTo(view)
@@ -203,7 +210,7 @@ class NotebookActivity : ComponentActivity() {
                 ui.readOnly = !writable(uri)
                 view.readOnly = ui.readOnly
                 ui.bookmarks = opened.bookmarks
-                view.setDocument(sizes, opened.strokes, opened.images)
+                view.setDocument(sizes, opened.strokes, opened.images, opened.links)
                 if (BuildConfig.DEBUG) diagnostics()
                 ui.status = ""
             }.onFailure { e ->

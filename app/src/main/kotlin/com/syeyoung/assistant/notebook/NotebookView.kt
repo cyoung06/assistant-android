@@ -88,8 +88,9 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     private val gap get() = 12f * resources.displayMetrics.density
 
-    fun setDocument(pageSizes: List<SizeF>, inkStrokes: List<InkStroke>, pageImages: List<NoteImage>) {
+    fun setDocument(pageSizes: List<SizeF>, inkStrokes: List<InkStroke>, pageImages: List<NoteImage>, pdfLinks: List<PdfLink> = emptyList()) {
         sizes = pageSizes
+        links = pdfLinks
         strokes.clear(); strokes += inkStrokes
         images.clear(); images += pageImages
         selectedImage = null
@@ -107,6 +108,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         val kept = strokes.mapNotNull { s -> moved(s.page)?.let { s.onPage(it) } }
         strokes.clear(); strokes += kept
         val keptImages = images.mapNotNull { img -> moved(img.page)?.let { img.with(page = it) } }
+        // A link to a deleted page goes nowhere now: left out.
+        links = links.mapNotNull { l -> moved(l.page)?.let { p -> if (l.target == null) l.copy(page = p) else moved(l.target)?.let { l.copy(page = p, target = it) } } }
         images.clear(); images += keptImages
         selectedImage = null
         group = null
@@ -190,7 +193,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         if (mode == ScrollMode.PAGED) layoutPages()
         val x = if (mode == ScrollMode.PAGED) rangeFor(p).left else scrollXf
         val y = if (mode == ScrollMode.PAGED) rangeFor(p).top else (rects[p].top * zoom - gap).coerceIn(0f, max(0f, contentH * zoom - height))
-        if (animate) animateTo(x, y) else { scrollXf = x; scrollYf = y; clampScroll(); afterMove() }
+        // Page by page, (x, y) is already where page p may rest; clamping would use the page shown before.
+        if (animate) animateTo(x, y) else { scrollXf = x; scrollYf = y; if (mode == ScrollMode.CONTINUOUS) clampScroll(); afterMove() }
     }
 
     /**
@@ -616,6 +620,18 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private var longPress: Runnable? = null
     /** Long-press on an empty spot with the select tool: offer to paste there. */
     var onLongPressEmpty: (x: Float, y: Float) -> Unit = { _, _ -> }
+
+    /** The PDF's links, and what a tap on one does. */
+    private var links: List<PdfLink> = emptyList()
+    var onLink: (PdfLink) -> Unit = {}
+
+    /** The link at (x, y) on screen, if any. */
+    private fun linkAt(x: Float, y: Float): PdfLink? {
+        val page = pageAt(x, y) ?: return null
+        val pt = floatArrayOf(x, y)
+        Matrix().also { pageMatrix(page).invert(it) }.mapPoints(pt)
+        return links.firstOrNull { it.page == page && it.rect.contains(pt[0], pt[1]) }
+    }
     /** Any touch on the page (closes a paste bubble). */
     var onTouchStart: () -> Unit = {}
 
@@ -1058,7 +1074,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             // Tapping anywhere off the selected image is done with it.
-            if (hasSelection && !onSelection(e.x, e.y)) clearSelection()
+            if (hasSelection) {
+                if (!onSelection(e.x, e.y)) clearSelection()
+                return true
+            }
+            linkAt(e.x, e.y)?.let(onLink)
             return true
         }
 
