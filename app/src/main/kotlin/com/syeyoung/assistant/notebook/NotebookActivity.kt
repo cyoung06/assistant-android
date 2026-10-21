@@ -10,6 +10,8 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -137,7 +139,8 @@ class NotebookActivity : ComponentActivity() {
                         target = dropTarget,
                     ),
                 ) {
-                    Column(Modifier.fillMaxSize()) {
+                    // Clear of the status and navigation bars (the window is edge to edge on phones), as notes are.
+                    Column(Modifier.fillMaxSize().background(androidx.compose.material3.MaterialTheme.colorScheme.surface).safeDrawingPadding()) {
                         NotebookHeader(ui, title, onBack = ::finish, onSearch = ::search, onHit = ::showHit, onChange = { changed(); scheduleSave() }, onPaste = ::paste)
                         Row(Modifier.fillMaxWidth().weight(1f)) {
                             Box(Modifier.fillMaxHeight().weight(1f)) {
