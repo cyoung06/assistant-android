@@ -683,6 +683,9 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     /** The PDF's links, and what a tap on one does. */
     private var links: List<PdfLink> = emptyList()
+
+    /** The PDF's links, as they are now (a live notebook's pages changed). */
+    fun setLinks(pdfLinks: List<PdfLink>) { links = pdfLinks }
     var onLink: (PdfLink) -> Unit = {}
 
     /** The link at (x, y) on screen, if any. */
@@ -1258,11 +1261,48 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         if (undo.size > 200) undo.removeFirst()
         redo.clear()
         notifyUndo()
+        tell(change, back = false)
         onInkChanged()
     }
 
-    fun undo() { undo.removeLastOrNull()?.let { apply(it, back = true); redo.addLast(it); notifyUndo(); onInkChanged() } }
-    fun redo() { redo.removeLastOrNull()?.let { apply(it, back = false); undo.addLast(it); notifyUndo(); onInkChanged() } }
+    fun undo() { undo.removeLastOrNull()?.let { apply(it, back = true); redo.addLast(it); notifyUndo(); tell(it, back = true); onInkChanged() } }
+    fun redo() { redo.removeLastOrNull()?.let { apply(it, back = false); undo.addLast(it); notifyUndo(); tell(it, back = false); onInkChanged() } }
+
+    /**
+     * What changed here (made, undone or redone): strokes and images gone, and put (new, or changed:
+     * the same id). For a live notebook, sent to the other devices.
+     */
+    var onEdit: (removedStrokes: List<InkStroke>, putStrokes: List<InkStroke>, removedImages: List<NoteImage>, putImages: List<NoteImage>) -> Unit = { _, _, _, _ -> }
+
+    private fun tell(c: InkChange, back: Boolean) {
+        fun <T> pick(forward: T, backward: T) = if (back) backward else forward
+        when (c) {
+            is InkChange.Added -> pick({ onEdit(emptyList(), c.strokes, emptyList(), emptyList()) }, { onEdit(c.strokes, emptyList(), emptyList(), emptyList()) })()
+            is InkChange.Erased -> pick({ onEdit(c.strokes, emptyList(), emptyList(), emptyList()) }, { onEdit(emptyList(), c.strokes, emptyList(), emptyList()) })()
+            is InkChange.ImageAdded -> pick({ onEdit(emptyList(), emptyList(), emptyList(), listOf(c.image)) }, { onEdit(emptyList(), emptyList(), listOf(c.image), emptyList()) })()
+            is InkChange.ImageRemoved -> pick({ onEdit(emptyList(), emptyList(), listOf(c.image), emptyList()) }, { onEdit(emptyList(), emptyList(), emptyList(), listOf(c.image)) })()
+            is InkChange.ImageChanged -> onEdit(emptyList(), emptyList(), emptyList(), listOf(if (back) c.before else c.after))
+            is InkChange.Replaced -> {
+                val (gone, put) = if (back) c.addedStrokes to c.removedStrokes else c.removedStrokes to c.addedStrokes
+                val (goneI, putI) = if (back) c.addedImages to c.removedImages else c.removedImages to c.addedImages
+                // What's put again (moved: the same id) isn't gone.
+                val putIds = put.map { it.id }.toSet()
+                val putImageIds = putI.map { it.id }.toSet()
+                onEdit(gone.filter { it.id !in putIds }, put, goneI.filter { it.id !in putImageIds }, putI)
+            }
+        }
+    }
+
+    /** Another device's changes (a live notebook): made here as they are, not as something to undo. */
+    fun applyRemote(removedStrokes: Set<Long>, putStrokes: List<InkStroke>, removedImages: Set<Long>, putImages: List<NoteImage>) {
+        val strokeIds = removedStrokes + putStrokes.map { it.id }
+        val imageIds = removedImages + putImages.map { it.id }
+        strokes.removeAll { it.id in strokeIds }; strokes += putStrokes
+        images.removeAll { it.id in imageIds }; images += putImages
+        group?.let { g -> if (g.strokeIds.any { it in strokeIds } || g.imageIds.any { it in imageIds }) group = null }
+        if (selectedImage?.id in imageIds) selectedImage = null
+        invalidate()
+    }
 
     private fun apply(c: InkChange, back: Boolean) {
         when (c) {

@@ -63,6 +63,8 @@ class NotebookActivity : ComponentActivity() {
     private lateinit var view: NotebookView
     private val renderer = PageRenderer()
     private var file: NotebookFile? = null
+    /** A notebook in the drive, edited live with every device on it (the server writes the PDF); null for other PDFs. */
+    private var live: NotebookSync? = null
     private val io = Mutex()
     private var dirty = false
     private var saveJob: Job? = null
@@ -77,7 +79,11 @@ class NotebookActivity : ComponentActivity() {
         Notebooks.remember(this, uri)
         title = Notebooks.name(this, uri)
         ui.load(prefs())
-        if (uri.authority == com.syeyoung.assistant.drive.DriveProvider.authority(this)) followConflicts(android.provider.DocumentsContract.getDocumentId(uri))
+        // A notebook in the drive (one that can be written on) is edited live; other PDFs as files of their own.
+        val livePath = uri.takeIf { it.authority == com.syeyoung.assistant.drive.DriveProvider.authority(this) }
+            ?.let { android.provider.DocumentsContract.getDocumentId(it) }
+            ?.takeIf { !com.syeyoung.assistant.drive.DriveProvider.readOnly(it) }
+        if (uri.authority == com.syeyoung.assistant.drive.DriveProvider.authority(this) && livePath == null) followConflicts(android.provider.DocumentsContract.getDocumentId(uri))
 
         val ink = InProgressStrokesView(this)
         view = NotebookView(this, ink, renderer).apply {
@@ -214,6 +220,7 @@ class NotebookActivity : ComponentActivity() {
             }
         }
 
+        if (livePath != null) return openLive(livePath)
         lifecycleScope.launch {
             ui.status = "Opening…"
             runCatching {
@@ -231,6 +238,40 @@ class NotebookActivity : ComponentActivity() {
                 ui.status = ""
             }.onFailure { e ->
                 Toast.makeText(this@NotebookActivity, "Couldn't open this PDF: ${e.message}", Toast.LENGTH_LONG).show()
+                finish()
+            }
+        }
+    }
+
+    /** Opens the drive notebook at [path] live (see [NotebookSync]). */
+    private fun openLive(path: String) {
+        lifecycleScope.launch {
+            ui.status = "Opening…"
+            val sync = NotebookSync(this@NotebookActivity, path, onStatus = { s, m ->
+                ui.status = when (s) { "connecting" -> "Connecting…"; "offline" -> "Offline (kept)"; "error" -> m ?: "Couldn't open it"; else -> "" }
+            }, listener = object : NotebookSync.Listener {
+                override fun pages(sources: List<PageRenderer.Source>, sizes: List<android.util.SizeF>, links: List<PdfLink>, moved: (Int) -> Int?) {
+                    renderer.open(sources)
+                    view.pagesChanged(sizes, moved)
+                    view.setLinks(links)
+                    // Page numbers changed: the text is read again on the next search.
+                    text = null
+                }
+                override fun remote(removedStrokes: Set<Long>, putStrokes: List<InkStroke>, removedImages: Set<Long>, putImages: List<NoteImage>) =
+                    view.applyRemote(removedStrokes, putStrokes, removedImages, putImages)
+                override fun bookmarks(pages: Set<Int>) { ui.bookmarks = pages }
+            })
+            runCatching { sync.open() }.onSuccess { o ->
+                live = sync
+                renderer.open(o.sources)
+                ui.readOnly = false
+                view.readOnly = false
+                ui.bookmarks = o.bookmarks
+                view.setDocument(o.sizes, o.strokes, o.images, o.links)
+                view.onEdit = { rs, ps, ri, pi -> sync.edited(rs, ps, ri, pi) }
+                ui.status = ""
+            }.onFailure { e ->
+                Toast.makeText(this@NotebookActivity, "Couldn't open this notebook: ${e.message}", Toast.LENGTH_LONG).show()
                 finish()
             }
         }
@@ -335,6 +376,8 @@ class NotebookActivity : ComponentActivity() {
     }
 
     private fun scheduleSave(now: Boolean = false) {
+        // Live: the ink went as it was written; bookmarks go now (the server writes the PDF).
+        live?.let { it.setBookmarks(ui.bookmarks); return }
         dirty = true
         saveJob?.cancel()
         saveJob = lifecycleScope.launch {
@@ -370,7 +413,7 @@ class NotebookActivity : ComponentActivity() {
 
     /** Writes [pages] (with their writing) to a PDF of their own, then hands it to [then]. */
     private fun exportPages(pages: Set<Int>, then: (java.io.File) -> Unit) {
-        val f = file ?: return
+        val f = file ?: return exportLive(pages, then)
         val strokes = view.strokesSnapshot()
         val images = view.imagesSnapshot()
         lifecycleScope.launch {
@@ -380,6 +423,22 @@ class NotebookActivity : ComponentActivity() {
             runCatching { withContext(Dispatchers.IO) { io.withLock { f.export(strokes, images, pages, out) } } }
                 .onSuccess { then(out) }
                 .onFailure { e -> Toast.makeText(this@NotebookActivity, "Couldn't export: ${e.message}", Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    /** A live notebook's pages, from the PDF as the server last wrote it (a few seconds behind the writing at most). */
+    private fun exportLive(pages: Set<Int>, then: (java.io.File) -> Unit) {
+        val uri = intent.data ?: return
+        lifecycleScope.launch {
+            val dir = java.io.File(cacheDir, "exports").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+            val name = title.removeSuffix(".pdf") + if (pages.size == 1) " p${pages.first() + 1}.pdf" else " (${pages.size} pages).pdf"
+            val out = java.io.File(dir, name.replace('/', '-'))
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val o = NotebookFile.open(this@NotebookActivity, uri) { InkIds.next() }
+                    try { o.file.export(o.strokes, o.images, pages, out) } finally { o.file.close() }
+                }
+            }.onSuccess { then(out) }.onFailure { e -> Toast.makeText(this@NotebookActivity, "Couldn't export: ${e.message}", Toast.LENGTH_LONG).show() }
         }
     }
 
@@ -407,6 +466,7 @@ class NotebookActivity : ComponentActivity() {
 
     private fun deletePages(pages: Set<Int>) {
         if (pages.isEmpty() || pages.size >= view.pageCount) return
+        live?.let { l -> lifecycleScope.launch { l.deletePages(pages) }; return }
         val sorted = pages.sorted()
         pageEdit({ it.deletePages(pages) }, land = (view.currentPage - sorted.count { it < view.currentPage }).coerceAtLeast(0)) { old ->
             if (old in pages) null else old - sorted.count { it < old }
@@ -417,6 +477,7 @@ class NotebookActivity : ComponentActivity() {
         val at = ui.addAfter ?: view.currentPage
         ui.addAfter = null
         val after = if (atEnd) view.pageCount - 1 else at
+        live?.let { l -> lifecycleScope.launch { l.insertPage(after, ref = at, style = style); view.goTo(after + 1) }; return }
         pageEdit({ it.insertPage(after, ref = at, style = style) }, land = after + 1) { old -> if (old > after) old + 1 else old }
     }
 
@@ -561,6 +622,7 @@ class NotebookActivity : ComponentActivity() {
     private fun deletePage() {
         if (view.pageCount <= 1) return
         val at = view.currentPage
+        live?.let { l -> lifecycleScope.launch { l.deletePages(setOf(at)) }; return }
         pageEdit({ it.deletePage(at) }, land = at) { old -> when { old == at -> null; old > at -> old - 1; else -> old } }
     }
 
@@ -601,6 +663,8 @@ class NotebookActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         renderer.close()
+        // Live: what's written went as it was; what's still on its way goes, then the connection.
+        live?.let { l -> (application as com.syeyoung.assistant.AssistantApplication).scope.launch(Dispatchers.Main) { l.close() } }
         val f = file ?: return
         val before = leaving
         // Once anything unsaved is saved, this session's working files go.

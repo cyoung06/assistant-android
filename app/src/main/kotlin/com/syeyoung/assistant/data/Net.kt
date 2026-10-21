@@ -169,6 +169,14 @@ class Api(endpoint: Endpoint) {
             Fetched(true, etagOf(r))
         }
 
+    /** A live notebook's base PDF or picture, by its content hash (they never change). */
+    suspend fun syncBlob(hash: String): ByteArray = send { http.get("$base/api/v1/sync/blobs/$hash") }.body()
+
+    /** A picture placed on a live notebook's page, kept by the server; its hash. */
+    suspend fun putSyncBlob(bytes: ByteArray, type: String): String =
+        send { http.post("$base/api/v1/sync/blobs") { setBody(io.ktor.http.content.ByteArrayContent(bytes, ContentType.parse(type))) } }
+            .body<String>().let { kotlinx.serialization.json.Json.parseToJsonElement(it).jsonObject["hash"]!!.jsonPrimitive.content }
+
     /** A small drive file (a note, an image it shows): its bytes, version and type. */
     class DriveFile(val bytes: ByteArray, val etag: String?, val type: String?)
 

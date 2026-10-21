@@ -30,15 +30,18 @@ class PageRenderer(threads: Int = 3) {
         override fun compareTo(other: Job) = compareValuesBy(this, other, { it.kind.ordinal }, { it.priority }, { it.seq })
     }
 
-    /** One thread's open renderer, for the file of [generation]. */
-    private class Open(val generation: Int, val renderer: PdfRenderer)
+    /** One thread's open renderers (by file), for the pages of [generation]. */
+    private class Open(val generation: Int, val renderers: HashMap<File, PdfRenderer> = HashMap())
+
+    /** Where a page is drawn from: page [index] of [file]. */
+    class Source(val file: File, val index: Int)
 
     private val pool = ThreadPoolExecutor(threads, threads, 0, TimeUnit.MILLISECONDS, PriorityBlockingQueue<Runnable>())
     private val main = Handler(Looper.getMainLooper())
     private val seq = AtomicLong()
     private val local = ThreadLocal<Open?>()
     private val opened = java.util.Collections.synchronizedList(mutableListOf<PdfRenderer>())
-    @Volatile private var file: File? = null
+    @Volatile private var sources: List<Source> = emptyList()
     @Volatile private var generation = 0
 
     /** Opens [file] (for every thread) and returns its page sizes in points ([known], if they are already). */
@@ -46,18 +49,26 @@ class PageRenderer(threads: Int = 3) {
         val sizes = known ?: PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)).use { r ->
             (0 until r.pageCount).map { i -> r.openPage(i).use { SizeF(it.width.toFloat(), it.height.toFloat()) } }
         }
-        this.file = file
-        generation++
+        open(sizes.indices.map { Source(file, it) })
         return sizes
     }
 
-    /** This thread's renderer for the current file, opened (or reopened) as needed. */
-    private fun renderer(): PdfRenderer? {
+    /** Pages drawn each from its own [sources] (a notebook's: its base PDF's, and blank ones). */
+    fun open(sources: List<Source>) {
+        this.sources = sources
+        generation++
+    }
+
+    /** This thread's renderer for [file], for the current pages, opened (or reopened) as needed. */
+    private fun renderer(file: File): PdfRenderer? {
         val gen = generation
-        local.get()?.let { if (it.generation == gen) return it.renderer; runCatching { it.renderer.close() }; opened.remove(it.renderer) }
-        val f = file ?: return null
-        return runCatching { PdfRenderer(ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY)) }.getOrNull()
-            ?.also { local.set(Open(gen, it)); opened += it }
+        val mine = local.get()?.takeIf { it.generation == gen } ?: Open(gen).also { fresh ->
+            local.get()?.renderers?.values?.forEach { runCatching { it.close() }; opened.remove(it) }
+            local.set(fresh)
+        }
+        mine.renderers[file]?.let { return it }
+        return runCatching { PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)) }.getOrNull()
+            ?.also { mine.renderers[file] = it; opened += it }
     }
 
     /**
@@ -73,12 +84,13 @@ class PageRenderer(threads: Int = 3) {
         pool.execute(Job(kind, priority, seq.incrementAndGet()) {
             val bitmap = run {
                 if (gen != generation || width <= 0 || height <= 0 || !wanted()) return@run null
-                val r = renderer() ?: return@run null
-                if (page >= r.pageCount) return@run null
+                val source = sources.getOrNull(page) ?: return@run null
+                val r = renderer(source.file) ?: return@run null
+                if (source.index >= r.pageCount) return@run null
                 Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
                     density = Bitmap.DENSITY_NONE
                     eraseColor(Color.WHITE)
-                    runCatching { r.openPage(page).use { it.render(this, null, pageToBitmap, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY) } }
+                    runCatching { r.openPage(source.index).use { it.render(this, null, pageToBitmap, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY) } }
                 }
             }
             main.post { if (bitmap != null && gen != generation) { bitmap.recycle(); done(null) } else done(bitmap) }

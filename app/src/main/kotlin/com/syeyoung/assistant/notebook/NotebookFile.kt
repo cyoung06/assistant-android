@@ -175,6 +175,12 @@ class NotebookFile private constructor(private val context: Context, var uri: Ur
         }
 
         private fun load(file: File): PDDocument = PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly())
+
+        /** The links in the PDF [file] (a live notebook's base: by its own page numbers). */
+        fun linksIn(context: Context, file: File): List<PdfLink> {
+            PDFBoxResourceLoader.init(context.applicationContext)
+            return load(file).use { linksOf(it) }
+        }
     }
 
     /** Writes the base plus [strokes] and [bookmarks] to the notebook's file (checked to be a readable PDF first). */
