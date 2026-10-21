@@ -93,8 +93,12 @@ class Api(endpoint: Endpoint) {
     val drive = com.syeyoung.assistant.api.apis.DriveControllerApi(base, engine, config)
     private val http = HttpClient(engine, config)
 
-    /** For notes edited live: WebSockets, without the request timeout (a note stays open for hours). */
-    private val sockets = HttpClient(engine) {
+    /**
+     * For notes edited live: WebSockets, without the request timeout (a note stays open for hours).
+     * Pinged (OkHttp's own pings; the engine doesn't take the plugin's), so a line that died quietly,
+     * as one does while the screen is off, is noticed and connected again.
+     */
+    private val sockets = HttpClient(OkHttp.create { config { pingInterval(20, java.util.concurrent.TimeUnit.SECONDS) } }) {
         install(io.ktor.client.plugins.websocket.WebSockets)
         defaultRequest { endpoint.headers.forEach { (k, v) -> headers.append(k, v) } }
     }
