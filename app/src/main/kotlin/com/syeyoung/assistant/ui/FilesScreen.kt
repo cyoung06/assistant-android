@@ -478,7 +478,9 @@ class EntryActions(
         FilesNav.changes++
     }
 
-    fun openInEditor(e: DriveEntry) = Notebooks.open(context, DriveProvider.uri(context, e.path))
+    fun openInEditor(e: DriveEntry, beside: Boolean = false) = Notebooks.open(context, DriveProvider.uri(context, e.path), beside)
+    /** A note in a window of its own, beside this one (split screen). */
+    fun openBeside(e: DriveEntry) = com.syeyoung.assistant.notes.NoteActivity.open(context, e.path, beside = true)
 
     fun openWith(e: DriveEntry) {
         val view = Intent(Intent.ACTION_VIEW).setDataAndType(DriveProvider.uri(context, e.path), e.contentType ?: DriveProvider.mimeOf(e.name, false)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -580,6 +582,9 @@ private fun EntryMenu(e: DriveEntry, actions: EntryActions) {
             androidx.compose.material3.DropdownMenuItem({ Text(text, color = color) }, { close(); action() }, leadingIcon = { Icon(icon, null, tint = if (color == androidx.compose.ui.graphics.Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else color) })
         Item("Open", if (e.folder) Icons.Filled.FolderOpen else Icons.Filled.Visibility) { actions.open(e) }
         if (pdf) Item("Open in editor", Icons.Filled.EditNote) { actions.openInEditor(e) }
+        // Beside what's open (split screen): a problem PDF next to the note it's worked in.
+        if (pdf) Item("Open in editor beside", Icons.Filled.EditNote) { actions.openInEditor(e, beside = true) }
+        if (com.syeyoung.assistant.notes.NoteEditor.isNote(e.name)) Item("Open beside", Icons.AutoMirrored.Filled.OpenInNew) { actions.openBeside(e) }
         if (!e.folder) {
             Item("Open with…", Icons.AutoMirrored.Filled.OpenInNew) { actions.openWith(e) }
             Item("Share", Icons.Filled.Share) { actions.share(e) }

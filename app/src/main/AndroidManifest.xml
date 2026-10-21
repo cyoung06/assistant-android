@@ -63,6 +63,7 @@
             android:name=".notebook.NotebookActivity"
             android:exported="true"
             android:label="Assistant"
+            android:documentLaunchMode="intoExisting"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -72,11 +73,12 @@
             </intent-filter>
         </activity>
 
-        <!-- A note (Markdown in the drive) in the editor, outside Files. -->
+        <!-- A note (Markdown in the drive) in the editor, outside Files: a window of its own, one per note. -->
         <activity
             android:name=".notes.NoteActivity"
             android:exported="false"
             android:label="Note"
+            android:documentLaunchMode="intoExisting"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
 

@@ -95,6 +95,7 @@ class NotebookActivity : ComponentActivity() {
                 }
             }
             onTouchStart = { ui.pasteAt = null }
+            onClip = { page, rect -> ui.clipping = false; clip(page, rect) }
         }
         ui.applyTo(view)
         val stack = FrameLayout(this).apply {
@@ -190,6 +191,21 @@ class NotebookActivity : ComponentActivity() {
                         FloatingBar(android.graphics.RectF(at.x, at.y, at.x, at.y), top = 57f) {
                             TextButton({ ui.pasteAt = null; paste(at.x, at.y) }) { Text("Paste") }
                             TextButton({ ui.pasteAt = null; ui.pickingImage = true }) { Text("Insert image…") }
+                        }
+                    }
+                    // Clipping: the view takes drags as the region; a bar says so, with a way out.
+                    androidx.compose.runtime.LaunchedEffect(ui.clipping) { view.clipping = ui.clipping }
+                    if (ui.clipping) {
+                        androidx.compose.material3.Surface(
+                            Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+                            color = androidx.compose.material3.MaterialTheme.colorScheme.inverseSurface,
+                            shadowElevation = 4.dp,
+                        ) {
+                            androidx.compose.foundation.layout.Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Drag over what to copy as a picture", color = androidx.compose.material3.MaterialTheme.colorScheme.inverseOnSurface)
+                                TextButton({ ui.clipping = false }) { Text("Cancel", color = androidx.compose.material3.MaterialTheme.colorScheme.inversePrimary) }
+                            }
                         }
                     }
                     if (ui.browsing) PageBrowser(ui, ::thumbnail, onGo = { view.goTo(it, animate = false) }, onChange = { scheduleSave() })
@@ -475,6 +491,33 @@ class NotebookActivity : ComponentActivity() {
         Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
     }
 
+    /**
+     * Region [rect] of [page] (the page as printed, the writing and images on it) on the clipboard
+     * as a picture, sharp enough to read (about 3 pixels to the point, at most 4096 across): to paste
+     * into a note, or anywhere.
+     */
+    private fun clip(page: Int, rect: android.graphics.RectF) {
+        val k = minOf(3f, 4096f / maxOf(rect.width(), rect.height()))
+        val w = (rect.width() * k).toInt().coerceAtLeast(1)
+        val h = (rect.height() * k).toInt().coerceAtLeast(1)
+        val m = android.graphics.Matrix().apply { setTranslate(-rect.left, -rect.top); postScale(k, k) }
+        renderer.render(page, w, h, m, PageRenderer.Kind.TILE, priority = -1f) { pdf ->
+            if (pdf == null) return@render
+            val bmp = view.renderClip(page, rect, k, pdf)
+            pdf.recycle()
+            lifecycleScope.launch {
+                val f = withContext(Dispatchers.IO) {
+                    val dir = java.io.File(cacheDir, "exports").apply { mkdirs() }
+                    java.io.File(dir, "clip-${System.currentTimeMillis()}.png").apply { outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) } }
+                }
+                bmp.recycle()
+                val uri = androidx.core.content.FileProvider.getUriForFile(this@NotebookActivity, "$packageName.files", f)
+                getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newUri(contentResolver, "Clip of page ${page + 1}", uri))
+                Toast.makeText(this@NotebookActivity, "Clipped: paste it in a note", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     /** Ctrl+V on a keyboard pastes. */
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
         if (keyCode == android.view.KeyEvent.KEYCODE_V && event.isCtrlPressed) { paste(); return true }
@@ -612,6 +655,8 @@ class ToolbarState {
     var confirmDelete by mutableStateOf(false)
     var jumping by mutableStateOf(false)
     var browsing by mutableStateOf(false)
+    /** Marking a region to copy as a picture (see NotebookView.clipping). */
+    var clipping by mutableStateOf(false)
     var quickPages by mutableStateOf(false)
     var addingPage by mutableStateOf(false)
     /** The page a new page goes after, when chosen in the page sidebar (else the current page). */

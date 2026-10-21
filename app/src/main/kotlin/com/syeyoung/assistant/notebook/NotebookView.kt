@@ -318,7 +318,16 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     private fun levelFor(z: Float) = when { z <= 1.01f -> 0; z <= 2.01f -> 1; z <= 4.01f -> 2; else -> 3 }
 
-    override fun onDraw(canvas: Canvas) = drawPages(canvas)
+    override fun onDraw(canvas: Canvas) {
+        drawPages(canvas)
+        val a = clipFrom
+        val b = clipTo
+        if (clipping && a != null && b != null) {
+            val r = RectF(minOf(a.x, b.x), minOf(a.y, b.y), maxOf(a.x, b.x), maxOf(a.y, b.y))
+            canvas.drawRect(r, clipShade)
+            canvas.drawRect(r, clipPaint)
+        }
+    }
 
     private fun drawPages(canvas: Canvas) {
         canvas.drawColor(0xFFE8E8EC.toInt())
@@ -546,8 +555,59 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     private fun isPen(e: MotionEvent, index: Int) = e.getToolType(index).let { it == MotionEvent.TOOL_TYPE_STYLUS || it == MotionEvent.TOOL_TYPE_ERASER }
 
+    // ---- clipping: a region of a page, as a picture ----
+
+    /** Clipping: a drag (finger or pen) marks a rectangle on a page; let go, and [onClip] gets it. */
+    var clipping = false
+        set(value) { field = value; clipFrom = null; clipTo = null; invalidate() }
+    /** A region clipped: on [page], [rect] in page points. */
+    var onClip: (page: Int, rect: RectF) -> Unit = { _, _ -> }
+    private var clipFrom: android.graphics.PointF? = null
+    private var clipTo: android.graphics.PointF? = null
+    private val clipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = 0xFF2F5BE0.toInt(); strokeWidth = 2f * resources.displayMetrics.density }
+    private val clipShade = Paint().apply { color = 0x222F5BE0 }
+
+    private fun clipTouch(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { clipFrom = android.graphics.PointF(e.x, e.y); clipTo = clipFrom }
+            MotionEvent.ACTION_MOVE -> clipTo = android.graphics.PointF(e.x, e.y)
+            MotionEvent.ACTION_UP -> {
+                val a = clipFrom ?: return true
+                val b = android.graphics.PointF(e.x, e.y)
+                clipFrom = null; clipTo = null
+                val page = pageAt(a.x, a.y)
+                if (page != null && abs(b.x - a.x) > 8 && abs(b.y - a.y) > 8) {
+                    // The rectangle in the page's points, within the page.
+                    val pts = floatArrayOf(a.x, a.y, b.x, b.y)
+                    Matrix().also { pageMatrix(page).invert(it) }.mapPoints(pts)
+                    val size = sizes[page]
+                    val r = RectF(minOf(pts[0], pts[2]), minOf(pts[1], pts[3]), maxOf(pts[0], pts[2]), maxOf(pts[1], pts[3]))
+                    if (r.intersect(0f, 0f, size.width, size.height)) onClip(page, r)
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> { clipFrom = null; clipTo = null }
+        }
+        invalidate()
+        return true
+    }
+
+    /**
+     * Region [rect] (points) of [page] as a picture, [k] pixels to the point: [pdf] (the page's
+     * own drawing of that region, rendered at that scale) with the writing and images on it.
+     */
+    fun renderClip(page: Int, rect: RectF, k: Float, pdf: Bitmap): Bitmap {
+        val bmp = pdf.copy(Bitmap.Config.ARGB_8888, true)
+        val c = Canvas(bmp)
+        val m = Matrix().apply { setTranslate(-rect.left, -rect.top); postScale(k, k) }
+        c.concat(m)
+        images.filter { it.page == page }.forEach { c.drawBitmap(it.bitmap, it.source(), it.rect, bitmapPaint) }
+        strokes.filter { it.page == page }.forEach { strokeRenderer.draw(c, it.stroke, m) }
+        return bmp
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (clipping) return clipTouch(e)
         if (e.actionMasked == MotionEvent.ACTION_DOWN) {
             onTouchStart()
             gesture = when {

@@ -43,7 +43,11 @@ object Notebooks {
         context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(BlankPdf.notebook(pages, style)) }
     }
 
-    fun open(context: Context, uri: Uri) {
-        context.startActivity(Intent(context, NotebookActivity::class.java).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
+    /** Opens the PDF at [uri] in a window of its own (one per PDF); [beside] puts it next to this one, in split screen. */
+    fun open(context: Context, uri: Uri, beside: Boolean = false) {
+        val intent = Intent(context, NotebookActivity::class.java).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        if (context !is android.app.Activity || beside) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (beside) intent.addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
+        context.startActivity(intent)
     }
 }

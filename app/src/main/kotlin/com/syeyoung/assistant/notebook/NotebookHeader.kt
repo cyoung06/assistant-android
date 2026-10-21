@@ -103,6 +103,7 @@ fun NotebookHeader(ui: ToolbarState, title: String, onBack: () -> Unit, onSearch
             Box {
                 IconButton({ open = true }) { Icon(Icons.Filled.MoreVert, "More", Modifier.size(26.dp)) }
                 DropdownMenu(open, { open = false }) {
+                    DropdownMenuItem({ Text("Clip a region…") }, { open = false; ui.clipping = true })
                     DropdownMenuItem({ Text("Insert image…") }, { open = false; ui.pickingImage = true })
                     DropdownMenuItem({ Text("Paste image") }, { open = false; onPaste() })
                     DropdownMenuItem({ Text("Pages and bookmarks") }, { open = false; ui.browsing = true })

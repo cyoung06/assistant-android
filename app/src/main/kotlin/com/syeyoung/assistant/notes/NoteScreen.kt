@@ -71,8 +71,15 @@ class NoteActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_PATH = "path"
-        fun open(context: Context, path: String) {
-            context.startActivity(Intent(context, NoteActivity::class.java).putExtra(EXTRA_PATH, path).apply { if (context !is android.app.Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+        /**
+         * Opens the note at [path] in a window of its own (one per note: opened again, it's the same
+         * one); [beside] puts it next to this one, in split screen.
+         */
+        fun open(context: Context, path: String, beside: Boolean = false) {
+            val intent = Intent(context, NoteActivity::class.java).setData(DriveProvider.uri(context, path)).putExtra(EXTRA_PATH, path)
+            if (context !is android.app.Activity || beside) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (beside) intent.addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
+            context.startActivity(intent)
         }
     }
 }
@@ -120,6 +127,7 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
                 IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                 DropdownMenu(menu, { menu = false }) {
                     DropdownMenuItem({ Text(if (source) "Show as written (rendered)" else "Show Markdown source") }, { menu = false; source = !source; editor.setSource(source) })
+                    if (!fullScreen) DropdownMenuItem({ Text("Open beside") }, { menu = false; NoteActivity.open(context, path, beside = true) })
                     DropdownMenuItem({ Text("Share") }, { menu = false; share(context, path) })
                     DropdownMenuItem({ Text("Open with…") }, { menu = false; openWith(context, path) })
                 }
