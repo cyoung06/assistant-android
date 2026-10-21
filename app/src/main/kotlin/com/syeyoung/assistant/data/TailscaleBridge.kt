@@ -51,7 +51,10 @@ class TailscaleBridge private constructor(private val context: Context) {
             } finally {
                 Crashes.markBridgeStarting(context, false)
             }
-        }.also { bridge = it }
+        }.also {
+            bridge = it
+            networkChanged()
+        }
     }
 
     suspend fun stop() = lock.withLock {
@@ -59,12 +62,19 @@ class TailscaleBridge private constructor(private val context: Context) {
         bridge = null
     }
 
+    /**
+     * Whether Android is keeping this app off the network (Doze, app standby, data saver): the node
+     * is told there's none meanwhile, so it pauses, and starts afresh (rebinding, reconnecting to
+     * control) once let back on, rather than waiting on connections that died in between.
+     */
+    @Volatile private var blocked = false
+
     /** Android won't let Go list interfaces itself, so they're described from here. */
     private fun updateInterfaces() {
         val cm = context.getSystemService(ConnectivityManager::class.java)
         val lines = mutableListOf("lo 1 65536 up 127.0.0.1/8 ::1/128")
         @Suppress("DEPRECATION")
-        for (network in cm.allNetworks) {
+        if (!blocked) for (network in cm.allNetworks) {
             val lp = cm.getLinkProperties(network) ?: continue
             val name = lp.interfaceName ?: continue
             val index = runCatching { NetworkInterface.getByName(name)?.index }.getOrNull() ?: 0
@@ -74,14 +84,26 @@ class TailscaleBridge private constructor(private val context: Context) {
         Tsbridge.setInterfaces(lines.joinToString("\n"))
     }
 
+    /** The interfaces and the default one told to the node, which re-checks the network (as Tailscale's app does). */
+    private fun networkChanged() {
+        updateInterfaces()
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val default = if (blocked) "" else cm.activeNetwork?.let { cm.getLinkProperties(it)?.interfaceName }.orEmpty()
+        bridge?.networkChanged(default)
+    }
+
     private var watching = false
     private fun watchNetwork() {
         if (watching) return
         watching = true
         context.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = updateInterfaces()
-            override fun onLost(network: Network) = updateInterfaces()
-            override fun onLinkPropertiesChanged(network: Network, lp: android.net.LinkProperties) = updateInterfaces()
+            override fun onAvailable(network: Network) = networkChanged()
+            override fun onLost(network: Network) = networkChanged()
+            override fun onLinkPropertiesChanged(network: Network, lp: android.net.LinkProperties) = networkChanged()
+            override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
+                this@TailscaleBridge.blocked = blocked
+                networkChanged()
+            }
         })
     }
 

@@ -7,6 +7,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.readBytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -82,20 +83,24 @@ class LiveConnection(
                     }
                 }
             }
+            // How it ended: as the attempt ends, or when it hasn't opened in time (not waiting for a
+            // stuck attempt to notice it's been let go).
+            val ended = CompletableDeferred<Throwable?>()
+            attempt.invokeOnCompletion { ended.complete(it) }
             val watchdog = scope.launch {
                 delay(OPENING)
-                if (!opened.get()) attempt.cancel()
+                if (!opened.get()) {
+                    attempt.cancel()
+                    ended.complete(java.util.concurrent.TimeoutException("not opened within ${OPENING / 1000} s"))
+                }
             }
-            try {
-                attempt.await()
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                if (!scope.isActive) throw e
-                android.util.Log.w("LiveConnection", "$path: not opened within ${OPENING / 1000} s")
-            } catch (e: Exception) {
-                android.util.Log.w("LiveConnection", "$path: ${e.message}")
+            val cause = try {
+                ended.await()
             } finally {
                 watchdog.cancel()
             }
+            if (!scope.isActive) break
+            if (cause != null && cause !is kotlinx.coroutines.CancellationException) android.util.Log.w("LiveConnection", "$path: ${cause.message}")
             if (refused || !scope.isActive) break
             onStatus("offline", null)
             delay(wait)

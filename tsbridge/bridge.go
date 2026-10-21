@@ -130,6 +130,17 @@ func Start(dir, hostname, authKey, target, token string) (*Bridge, error) {
 	return b, nil
 }
 
+// NetworkChanged tells the node the device's network changed, as Tailscale's own Android app does
+// (libtailscale's NetworkChanged): defaultIface is the default network's interface ("" when there's
+// none), and the interfaces are as last given to SetInterfaces. A change of default interface makes
+// the node rebind and reconnect; no interface up pauses it until one is.
+func (b *Bridge) NetworkChanged(defaultIface string) {
+	netmon.UpdateLastKnownDefaultRouteInterface(defaultIface)
+	if m, ok := b.srv.Sys().NetMon.GetOK(); ok {
+		m.InjectEvent()
+	}
+}
+
 // Port is the local proxy's port on 127.0.0.1.
 func (b *Bridge) Port() int { return b.ln.Addr().(*net.TCPAddr).Port }
 
