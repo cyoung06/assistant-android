@@ -66,9 +66,15 @@ class LiveConnection(
                     send(Frame.Binary(true, greeting()))
                     val sender = launch { for (m in pending) send(Frame.Binary(true, m)) }
                     try {
+                        var live = false
                         for (frame in incoming) {
                             if (frame !is Frame.Binary) continue
                             val bytes = frame.readBytes()
+                            // The server's first word on this connection: live (again, after a drop).
+                            if (!live) {
+                                live = true
+                                withContext(Dispatchers.Main.immediate) { onStatus("live", null) }
+                            }
                             // On the main thread: the document and what shows it change together.
                             withContext(Dispatchers.Main.immediate) { receive(bytes) }?.let { send(Frame.Binary(true, it)) }
                         }
