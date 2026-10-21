@@ -27,11 +27,15 @@ abstract class Cargo : DefaultTask() {
     @get:Inject abstract val exec: ExecOperations
 
     protected fun cargo(vararg args: String, env: Map<String, String> = emptyMap()) {
+        // rustup's cargo, found here: the command is looked up on Gradle's own PATH, which may
+        // find another Rust (Homebrew's) whose cargo would mix toolchains with rustup's rustc.
+        val path = listOf("/opt/homebrew/opt/rustup/bin", "${System.getProperty("user.home")}/.cargo/bin") + System.getenv("PATH").split(":")
+        val cargo = path.map { File(it, "cargo") }.first { it.canExecute() }
         exec.exec {
             workingDir = crate.get().asFile
-            environment("PATH", listOf("/opt/homebrew/opt/rustup/bin", "${System.getProperty("user.home")}/.cargo/bin", System.getenv("PATH")).joinToString(":"))
+            environment("PATH", path.joinToString(":"))
             env.forEach { (k, v) -> environment(k, v) }
-            commandLine(listOf("cargo") + args)
+            commandLine(listOf(cargo.path) + args)
         }
     }
 }

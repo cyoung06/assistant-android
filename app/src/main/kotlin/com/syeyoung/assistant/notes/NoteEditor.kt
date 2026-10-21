@@ -31,7 +31,7 @@ import java.net.URI
 
 /**
  * A Markdown note being written, natively: the text in an [EditText] styled as the web editor's
- * live preview (see [LivePreview]), saved by [NoteDocument]. [onStatus] hears how saving is going;
+ * live preview (see [LivePreview]), kept in step with every device by [NoteDocument]. [onStatus] hears how that's going;
  * [onLink] opens a followed link (a web address, or with its drive path, a drive file).
  */
 class NoteEditor(
@@ -41,7 +41,7 @@ class NoteEditor(
     private val onLink: (href: String, resolvedPath: String?) -> Unit,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val document = NoteDocument(context, path, { field.text.toString() }, onStatus)
+    private val document = NoteDocument(context, path, onStatus, ::remote)
     private var style: NoteStyle = noteStyle(false)
     private var fonts: NoteCore.Fonts? = null
     private var preview: LivePreview? = null
@@ -68,7 +68,6 @@ class NoteEditor(
         override fun onFocusChanged(focused: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
             super.onFocusChanged(focused, direction, previouslyFocusedRect)
             restyle(structure = false)
-            if (!focused) scope.launch { document.save() }
         }
 
         override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -76,14 +75,13 @@ class NoteEditor(
             if (w != oldw) restyle(structure = false)
         }
 
-        // With a keyboard: Ctrl-B bold, Ctrl-I italic, Ctrl-K a link, Ctrl-S saves (as on the web).
+        // With a keyboard: Ctrl-B bold, Ctrl-I italic, Ctrl-K a link (as on the web).
         override fun onKeyShortcut(keyCode: Int, event: KeyEvent): Boolean {
             if (!event.isCtrlPressed || document.readOnly) return super.onKeyShortcut(keyCode, event)
             when (keyCode) {
                 KeyEvent.KEYCODE_B -> wrap("**")
                 KeyEvent.KEYCODE_I -> wrap("*")
                 KeyEvent.KEYCODE_K -> link()
-                KeyEvent.KEYCODE_S -> scope.launch { document.save() }
                 else -> return super.onKeyShortcut(keyCode, event)
             }
             return true
@@ -119,10 +117,13 @@ class NoteEditor(
     init {
         field.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                // Typed here (not loaded, not another device's): to the others, as it happens.
+                if (!loading && !applying) document.edited(start, start + before, s!!.subSequence(start, start + count).toString())
+            }
             override fun afterTextChanged(s: Editable) {
                 restyle(structure = true)
-                if (!loading) { document.edited(); offerBlocks() }
+                if (!loading && !applying) offerBlocks()
             }
         })
         // A tap on a checkbox toggles its task; on a link (shown as one, not being edited), opens it.
@@ -135,14 +136,12 @@ class NoteEditor(
             field.typeface = fonts!!.text
             applyStyle()
             val opened = runCatching { document.open() }.getOrElse { e -> onStatus("error", e.message ?: "Couldn't open it"); return@launch }
-            show(opened.text)
+            show(opened)
             field.isEnabled = true
             // Opened as a preview, at its start; editing is asked for (Edit).
             field.setSelection(0)
             view.scrollTo(0, 0)
             setEditing(false)
-            // A draft from before is being edited already.
-            if (opened.state == "unsaved" || opened.state == "conflict") setEditing(true)
         }
     }
 
@@ -189,10 +188,23 @@ class NoteEditor(
             input.hideSoftInputFromWindow(field.windowToken, 0)
             field.clearFocus()
             slash.dismiss()
-            scope.launch { document.save() }
         }
         restyle(structure = false)
         onEditing(on)
+    }
+
+    /** Another device's edits being applied (not typed here: not sent back). */
+    private var applying = false
+
+    /** Another device's edits, as the document took them: made to the text in order (the cursor and selection move with the text around them). */
+    private fun remote(changes: List<com.syeyoung.assistant.core.TextChange>) {
+        val text = field.text ?: return
+        applying = true
+        try {
+            for (c in changes) text.replace(c.from.toInt(), c.to.toInt(), c.insert)
+        } finally {
+            applying = false
+        }
     }
 
     /** Shows [text] as the note (opened, or another version), keeping the cursor where it can. */
@@ -391,15 +403,6 @@ class NoteEditor(
 
     // ---- what the screen asks ----
 
-    /** Writes what's unsaved now ([then] when done: true if it's all written; if not, it's kept as a draft). */
-    fun flush(then: (Boolean) -> Unit = {}) {
-        scope.launch { then(document.flush()) }
-    }
-
-    /** Coming back: a newer version written elsewhere shows, unless this one's being edited. */
-    fun refresh() {
-        scope.launch { document.newer()?.let(::show) }
-    }
 
     fun setSource(on: Boolean) {
         source = on
@@ -411,14 +414,9 @@ class NoteEditor(
         applyStyle()
     }
 
-    // A conflict: what to keep.
-    fun keepMine() { document.keepMine() }
-    fun loadTheirs() { scope.launch { runCatching { document.loadTheirs() }.onSuccess(::show) } }
-    fun saveCopy(then: (String) -> Unit) { scope.launch { runCatching { document.saveCopy() }.onSuccess { (name, theirs) -> show(theirs); then(name) } } }
-
-    /** Saves, then lets the note go. */
+    /** Lets the note go (what's typed and not yet sent goes first). */
     fun destroy() {
-        flush {
+        CoroutineScope(Dispatchers.Main).launch {
             document.close()
             scope.cancel()
         }

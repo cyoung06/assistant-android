@@ -20,6 +20,7 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.forms.formData
 import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.client.request.delete
@@ -91,6 +92,19 @@ class Api(endpoint: Endpoint) {
     val triage = TriageControllerApi(base, engine, config)
     val drive = com.syeyoung.assistant.api.apis.DriveControllerApi(base, engine, config)
     private val http = HttpClient(engine, config)
+
+    /** For notes edited live: WebSockets, without the request timeout (a note stays open for hours). */
+    private val sockets = HttpClient(engine) {
+        install(io.ktor.client.plugins.websocket.WebSockets)
+        defaultRequest { endpoint.headers.forEach { (k, v) -> headers.append(k, v) } }
+    }
+
+    /**
+     * A note's live editing: the API's y-websocket endpoint, [session] running while it's connected
+     * (it returns when the connection closes; see notes/NoteDocument).
+     */
+    suspend fun sync(path: String, session: suspend io.ktor.client.plugins.websocket.DefaultClientWebSocketSession.() -> Unit) =
+        sockets.webSocket(base.replaceFirst("http", "ws") + "/api/v1/sync?doc=" + java.net.URLEncoder.encode(path, Charsets.UTF_8).replace("+", "%20"), block = session)
 
     suspend fun patchTask(id: UUID, patch: JsonObject) = send {
         http.patch("$base/api/v1/tasks/$id") { contentType(ContentType.Application.Json); setBody(patch) }

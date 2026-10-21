@@ -1,192 +1,124 @@
 package com.syeyoung.assistant.notes
 
 import android.content.Context
-import com.syeyoung.assistant.data.ApiException
+import com.syeyoung.assistant.core.SyncDoc
+import com.syeyoung.assistant.core.TextChange
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.drive.DriveProvider
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readBytes
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import org.json.JSONObject
-import java.io.File
-import java.security.MessageDigest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * A note's file and what's typed into it, as the web editor keeps them: saved a second after typing
- * stops, only over the version it's based on (If-Match); what isn't written yet is kept as a draft
- * on the device until it is, and offered when the note opens again (as a conflict if the note
- * changed meanwhile). [text] is what the editor has now; [onStatus] hears how saving is going.
+ * A note as every device has it at once: a Yjs document ([SyncDoc], the shared core's) kept in step
+ * with the API's (y-websocket, see [com.syeyoung.assistant.data.Api.sync]), which writes the file.
+ * Edits typed here go out as they're made ([edited]); others' come in through [onRemote], on the main
+ * thread, as the document takes them (so the editor's text and the document's never drift apart).
+ * Course files only read. [onStatus] hears "loading", "live", "connecting", "offline", "readonly",
+ * or "error" with why.
  */
 class NoteDocument(
     context: Context,
     val path: String,
-    private val text: () -> String,
     private val onStatus: (state: String, message: String?) -> Unit,
+    private val onRemote: (List<TextChange>) -> Unit,
 ) {
     private val app = context.applicationContext
-    private suspend fun api() = Repo.get(app).api()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val readOnly = DriveProvider.readOnly(path)
 
-    /** The version the text is based on (an ETag). */
-    private var version: String? = null
-    private var dirty = false
-    private var conflicted = false
-    private var saving: Job? = null
-    private var timer: Job? = null
-    private var keepTimer: Job? = null
-    /** Deleted: nothing's written back. */
-    private var gone = false
+    private val doc = SyncDoc()
+    /** What's to be sent; edits made while offline wait here (and the sync on reconnecting covers them anyway). */
+    private val pending = Channel<ByteArray>(Channel.UNLIMITED)
+    private var opened: CompletableDeferred<String>? = null
+    /** Refused by the server (not a note to edit live, or moved or deleted): no more tries. */
+    private var refused = false
 
-    private val drafts = File(app.filesDir, "note-drafts").apply { mkdirs() }
-    /** Draft writes, one at a time and in order, off the main thread. */
-    private val disk = Dispatchers.IO.limitedParallelism(1)
-    private val draftFile = File(drafts, MessageDigest.getInstance("SHA-256").digest(path.toByteArray()).joinToString("") { "%02x".format(it) }.take(32) + ".json")
-
-    /** The note to show: its text, and how it opens ("saved", or "unsaved"/"conflict" with a draft). */
-    class Opened(val text: String, val state: String)
-
-    /** Reads the note; a draft left from before is shown instead (see the class). */
-    suspend fun open(): Opened {
+    /** The note's text: once it's come from the server (or, for course files, as the file is). */
+    suspend fun open(): String {
         onStatus("loading", null)
-        val file = api().driveRead(path)
-        version = file.etag
-        val written = file.bytes.toString(Charsets.UTF_8)
-        val draft = if (readOnly) null else readDraft()
-        val state = when {
-            draft == null -> if (readOnly) "readonly" else "saved"
-            draft.text == written -> { clearDraft(); "saved" }
-            draft.base == version -> { dirty = true; schedule(); "unsaved" }
-            else -> { version = draft.base; dirty = true; conflicted = true; "conflict" }
+        if (readOnly) {
+            val text = Repo.get(app).api().driveRead(path).bytes.toString(Charsets.UTF_8)
+            onStatus("readonly", null)
+            return text
         }
-        onStatus(state, null)
-        return Opened(draft?.text?.takeIf { state != "saved" } ?: written, state)
+        val first = CompletableDeferred<String>().also { opened = it }
+        scope.launch { connect() }
+        return first.await()
     }
 
-    /** The text was typed into (not loaded): kept as a draft at once, saved a second after typing stops. */
-    fun edited() {
-        if (readOnly || gone) return
-        dirty = true
-        keepTimer?.cancel()
-        keepTimer = scope.launch { delay(300); keep() }
-        if (!conflicted) { onStatus("unsaved", null); schedule() }
+    /** Typed here: [to] - [from] UTF-16 units from [from] replaced by [insert]. On the main thread, as the editor changes. */
+    fun edited(from: Int, to: Int, insert: String) {
+        if (readOnly) return
+        pending.trySend(doc.edit(from.toUInt(), to.toUInt(), insert))
     }
 
-    private fun schedule() {
-        timer?.cancel()
-        timer = scope.launch { delay(1000); save() }
-    }
-
-    /** Writes the note; with [force], even over a version written elsewhere. */
-    suspend fun save(force: Boolean = false) {
-        if (readOnly || gone || (!dirty && !force) || (conflicted && !force)) return
-        saving?.let { it.join(); return save(force) }
-        val writing = text()
-        dirty = false
-        onStatus("saving", null)
-        saving = scope.launch {
+    /** Connected, with tries again (a little later each time, up to half a minute) until let go. */
+    private suspend fun connect() {
+        var wait = 1000L
+        while (scope.isActive && !refused) {
+            onStatus("connecting", null)
             try {
-                version = api().driveWrite(path, writing.toByteArray(), "text/markdown; charset=utf-8", if (force) null else version)
-                conflicted = false
-                onStatus(if (dirty) "unsaved" else "saved", null)
-            } catch (e: ApiException) {
-                dirty = true
-                if (e.status == 412) { conflicted = true; onStatus("conflict", null) } else onStatus("error", e.message)
+                Repo.get(app).api().sync(path) {
+                    wait = 1000L
+                    // Old messages: what they carried is in the sync this connection starts with.
+                    while (pending.tryReceive().isSuccess) Unit
+                    send(Frame.Binary(true, doc.start()))
+                    val sender = launch { for (m in pending) send(Frame.Binary(true, m)) }
+                    try {
+                        for (frame in incoming) {
+                            if (frame !is Frame.Binary) continue
+                            val bytes = frame.readBytes()
+                            // On the main thread: the document and the editor's text change together.
+                            val reply = withContext(Dispatchers.Main.immediate) {
+                                val got = doc.receive(bytes)
+                                if (got.changes.isNotEmpty() && opened?.isCompleted == true) onRemote(got.changes)
+                                // The server's answer to our sync step 1 (y-protocols: sync, step 2): the note is all here.
+                                if (opened?.isCompleted == false && bytes.size > 1 && bytes[0] == 0.toByte() && bytes[1] == 1.toByte()) {
+                                    opened?.complete(doc.text())
+                                }
+                                if (opened?.isCompleted == true) onStatus("live", null)
+                                got.reply
+                            }
+                            reply?.let { send(Frame.Binary(true, it)) }
+                        }
+                        val reason = closeReason.await()
+                        if (reason?.code == CloseReason.Codes.VIOLATED_POLICY.code) {
+                            refused = true
+                            onStatus("error", reason.message.ifEmpty { "This note can't be opened" })
+                            opened?.completeExceptionally(IllegalStateException(reason.message))
+                        }
+                    } finally {
+                        sender.cancel()
+                    }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                dirty = true
                 throw e
             } catch (e: Exception) {
-                dirty = true
-                onStatus("error", e.message)
-            } finally {
-                keep()
+                android.util.Log.w("NoteDocument", "$path: ${e.message}")
             }
-        }
-        saving?.join()
-        saving = null
-    }
-
-    /** Writes what's unsaved now; true once everything typed is written (false: it's kept as a draft). */
-    suspend fun flush(): Boolean {
-        timer?.cancel()
-        keep()
-        save()
-        return readOnly || gone || (!dirty && !conflicted)
-    }
-
-    /** Coming back to the note: a newer version is shown if nothing's being edited (only asked if it changed). */
-    suspend fun newer(): String? {
-        if (dirty || saving != null || conflicted) return null
-        val fresh = runCatching { api().driveReadIfChanged(path, version) }.getOrNull() ?: return null
-        version = fresh.etag
-        return fresh.bytes.toString(Charsets.UTF_8)
-    }
-
-    // ---- a conflict: what to keep ----
-
-    /** Writes what's here over the other version. */
-    fun keepMine() = scope.launch { save(force = true) }
-
-    /** The other version, instead of what's here (which is dropped). */
-    suspend fun loadTheirs(): String {
-        val file = api().driveRead(path)
-        version = file.etag
-        dirty = false
-        conflicted = false
-        clearDraft()
-        onStatus("saved", null)
-        return file.bytes.toString(Charsets.UTF_8)
-    }
-
-    /** What's here, written beside the note as "name (my copy).md"; then the note's own version is shown. Its name, and that version. */
-    suspend fun saveCopy(): Pair<String, String> {
-        val name = path.substringAfterLast('/').let { n -> n.substringBeforeLast('.', n) + " (my copy)" + (if ('.' in n) "." + n.substringAfterLast('.') else "") }
-        val folder = path.substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
-        val mine = text().toByteArray()
-        val (at, _) = api().driveCreate(folder + name) { api().driveWrite(it, mine, "text/markdown; charset=utf-8", absent = true) }
-        return at.substringAfterLast('/') to loadTheirs()
-    }
-
-    /** The note is being deleted: nothing's written back (that would make it again). */
-    fun stop() {
-        gone = true
-        timer?.cancel()
-        keepTimer?.cancel()
-        clearDraft()
-    }
-
-    fun close() = scope.cancel()
-
-    // ---- the draft ----
-
-    private class Draft(val text: String, val base: String?)
-
-    /** Keeps what's unsaved as a draft (none once it's all written). */
-    private fun keep() {
-        keepTimer?.cancel()
-        if (readOnly || gone) return
-        if (!dirty && !conflicted) return clearDraft()
-        val json = JSONObject().put("text", text()).put("base", version ?: JSONObject.NULL).put("at", System.currentTimeMillis()).toString()
-        scope.launch(disk) {
-            // Written whole, then put in place: a crash mid-write leaves the last draft.
-            val tmp = File(drafts, draftFile.name + ".tmp")
-            tmp.writeText(json)
-            tmp.renameTo(draftFile)
+            if (refused || !scope.isActive) break
+            onStatus("offline", null)
+            delay(wait)
+            wait = (wait * 2).coerceAtMost(30_000)
         }
     }
 
-    private suspend fun readDraft(): Draft? = kotlinx.coroutines.withContext(disk) { readDraftNow() }
-
-    private fun readDraftNow(): Draft? = runCatching {
-        val j = JSONObject(draftFile.readText())
-        Draft(j.getString("text"), j.optString("base").takeIf { !j.isNull("base") })
-    }.getOrNull()
-
-    private fun clearDraft() {
-        scope.launch(disk) { draftFile.delete() }
+    /** Lets the note go: what's still to be sent goes first (a few seconds at most). */
+    suspend fun close() {
+        withTimeoutOrNull(3000) { while (!pending.isEmpty) delay(50) }
+        scope.cancel()
+        doc.close()
     }
 }

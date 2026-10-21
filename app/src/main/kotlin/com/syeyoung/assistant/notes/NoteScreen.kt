@@ -97,18 +97,6 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
         editor.onEditing = { editing = it }
         onDispose { editor.destroy() }
     }
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    DisposableEffect(lifecycle, editor) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE -> editor.flush()
-                Lifecycle.Event.ON_RESUME -> editor.refresh()
-                else -> {}
-            }
-        }
-        lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer) }
-    }
     val dark = isSystemInDarkTheme()
     LaunchedEffect(dark) { editor.setTheme(dark) }
 
@@ -119,7 +107,7 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
                 Text(path.substringAfterLast('/'), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     statusText(state, message), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    color = if (state == "error" || state == "conflict") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (state == "error" || state == "offline") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             // A note opens as a preview; editing is asked for.
@@ -138,7 +126,6 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
             }
         }
         HorizontalDivider()
-        if (state == "conflict") ConflictBanner(editor)
         androidx.compose.runtime.key(editor) {
             // The text column at most as wide as the web's, centred; nothing drawn outside the pane
             // (Compose doesn't clip what it holds unless asked).
@@ -150,28 +137,12 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
 }
 
 /** The note changed elsewhere since it was opened: what to keep (as the web editor asks). */
-@Composable
-private fun ConflictBanner(editor: NoteEditor) {
-    val context = LocalContext.current
-    Row(
-        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer).padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
-    ) {
-        Text("This note was changed somewhere else since you opened it.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
-        androidx.compose.material3.TextButton({ editor.keepMine() }) { Text("Keep mine") }
-        androidx.compose.material3.TextButton({ editor.loadTheirs() }) { Text("Load theirs") }
-        androidx.compose.material3.TextButton({ editor.saveCopy { name -> Toast.makeText(context, "Yours is saved as $name", Toast.LENGTH_LONG).show() } }) { Text("Save mine as a copy") }
-    }
-}
-
 private fun statusText(state: String, message: String?) = when (state) {
     "loading" -> "Opening…"
-    "saved" -> "Saved"
-    "unsaved" -> "Edited"
-    "saving" -> "Saving…"
-    "error" -> message ?: "Couldn't save"
-    "conflict" -> "Changed elsewhere"
+    "live" -> "Live"
+    "connecting" -> "Connecting…"
+    "offline" -> "Offline (edits kept)"
+    "error" -> message ?: "Couldn't open it"
     "readonly" -> "From PLMS · read-only"
     else -> ""
 }
