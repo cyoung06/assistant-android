@@ -1149,7 +1149,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 if (!onSelection(e.x, e.y)) clearSelection()
                 return true
             }
-            linkAt(e.x, e.y)?.let(onLink)
+            linkAt(e.x, e.y)?.let { link ->
+                // Gone to (page by page, lifting the finger would otherwise settle back on this page).
+                flingHandled = true
+                onLink(link)
+            }
             return true
         }
 
