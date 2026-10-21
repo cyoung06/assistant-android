@@ -777,7 +777,8 @@ private fun Modifier.driveGestures(onTap: () -> Unit, onMenu: () -> Unit, onDrag
             val first = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
                 while (true) {
                     val c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull false
-                    if (!c.pressed) return@withTimeoutOrNull true
+                    // Let go: a tap, unless something inside took it (a folder's arrow, which folds it).
+                    if (!c.pressed) return@withTimeoutOrNull !c.isConsumed
                     if ((c.position - down.position).getDistance() > slop) return@withTimeoutOrNull false
                 }
                 @Suppress("UNREACHABLE_CODE") false
