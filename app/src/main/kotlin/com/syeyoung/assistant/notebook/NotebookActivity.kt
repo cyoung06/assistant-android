@@ -263,6 +263,7 @@ class NotebookActivity : ComponentActivity() {
                 override fun remote(removedStrokes: Set<Long>, putStrokes: List<InkStroke>, removedImages: Set<Long>, putImages: List<NoteImage>) =
                     view.applyRemote(removedStrokes, putStrokes, removedImages, putImages)
                 override fun bookmarks(pages: Set<Int>) { ui.bookmarks = pages }
+                override fun links(links: List<PdfLink>) = view.setLinks(links)
             })
             runCatching { sync.open() }.onSuccess { o ->
                 live = sync

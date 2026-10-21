@@ -50,6 +50,8 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
         fun pages(sources: List<PageRenderer.Source>, sizes: List<SizeF>, links: List<PdfLink>, moved: (Int) -> Int?)
         fun remote(removedStrokes: Set<Long>, putStrokes: List<InkStroke>, removedImages: Set<Long>, putImages: List<NoteImage>)
         fun bookmarks(pages: Set<Int>)
+        /** The PDF's links, once found (after the pages: finding them in a big PDF takes a while). */
+        fun links(links: List<PdfLink>)
     }
 
     class Opened(val sources: List<PageRenderer.Source>, val sizes: List<SizeF>, val links: List<PdfLink>, val strokes: List<InkStroke>, val images: List<NoteImage>, val bookmarks: Set<Int>)
@@ -152,11 +154,44 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
                 PageRenderer.Source(f, 0)
             }
         }
-        // The base PDF's links, on the pages showing its pages.
-        val baseLinks = if (base.exists()) runCatching { NotebookFile.linksIn(app, base) }.getOrDefault(emptyList()) else emptyList()
+        // The base PDF's links, if known already; else found meanwhile, and told when they are.
+        val known = baseLinks?.takeIf { it.first == hash }?.second ?: if (hash.isNotEmpty()) readLinks(hash) else null
+        if (known == null && base.exists()) scope.launch {
+            val found = withContext(Dispatchers.IO) { runCatching { NotebookFile.linksIn(app, base) }.getOrDefault(emptyList()).also { writeLinks(hash, it) } }
+            baseLinks = hash to found
+            listener.links(linksOn(found, doc.pages()))
+        }
+        known?.let { baseLinks = hash to it }
+        sources to linksOn(known.orEmpty(), pages)
+    }
+
+    /** The base PDF's links (by its own page numbers) and whose they are, once found. */
+    private var baseLinks: Pair<String, List<PdfLink>>? = null
+
+    /** [baseLinks] on the pages showing the base's pages. */
+    private fun linksOn(baseLinks: List<PdfLink>, pages: List<NotebookPage>): List<PdfLink> {
         val where = pages.withIndex().filter { it.value.base >= 0 }.associate { it.value.base to it.index }
-        val links = baseLinks.mapNotNull { l -> where[l.page]?.let { page -> l.copy(page = page, target = l.target?.let { where[it] }) } }
-        sources to links
+        return baseLinks.mapNotNull { l -> where[l.page]?.let { page -> l.copy(page = page, target = l.target?.let { where[it] }) } }
+    }
+
+    // A base PDF's links, kept beside it (found once per PDF: a textbook's take seconds to find).
+    private fun linksFile(hash: String) = File(File(app.cacheDir, "notebook-blobs"), "$hash.links")
+
+    private fun readLinks(hash: String): List<PdfLink>? = runCatching {
+        val f = linksFile(hash)
+        if (!f.exists()) return null
+        f.readLines().filter { it.isNotBlank() }.map { line ->
+            val p = line.split('\t')
+            PdfLink(p[0].toInt(), android.graphics.RectF(p[1].toFloat(), p[2].toFloat(), p[3].toFloat(), p[4].toFloat()), p[6].ifEmpty { null }, p[5].toIntOrNull())
+        }
+    }.getOrNull()
+
+    private fun writeLinks(hash: String, links: List<PdfLink>) {
+        runCatching {
+            linksFile(hash).writeText(links.joinToString("\n") { l ->
+                listOf(l.page, l.rect.left, l.rect.top, l.rect.right, l.rect.bottom, l.target ?: "", (l.uri ?: "").replace('\t', ' ').replace('\n', ' ')).joinToString("\t")
+            })
+        }
     }
 
     // ---- written here ----
