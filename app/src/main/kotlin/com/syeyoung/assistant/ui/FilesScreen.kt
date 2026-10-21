@@ -333,7 +333,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                                     Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
                                         .then(if (hover) Modifier.background(MaterialTheme.colorScheme.primaryContainer) else Modifier)
                                         .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path), onHover = { hover = it }) { drop(e.path, it) } else Modifier)
-                                        .driveGestures({ actions.open(e) }, { actions.menu(e) }) { copy -> drag(e, copy) }.padding(8.dp),
+                                        .driveGestures({ actions.open(e) }, { actions.menu(e, FOLDER) }) { copy -> drag(e, copy) }.padding(8.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
                                     if (e.name.lowercase().endsWith(".pdf")) PdfThumb(e) { Icon(iconOf(e), null, Modifier.size(56.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -341,7 +341,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                                     Spacer(Modifier.height(6.dp))
                                     Text(e.name, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, fontSize = 13.sp)
                                 }
-                                EntryMenu(e, actions)
+                                EntryMenu(e, actions, FOLDER)
                             }
                         }
                     }
@@ -355,9 +355,9 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                                     supportingContent = { Text(listOfNotNull(if (e.folder) null else size(e.propertySize), e.modified?.let(::date)).joinToString(" · ")) },
                                     modifier = Modifier
                                         .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path)) { drop(e.path, it) } else Modifier)
-                                        .driveGestures({ actions.open(e) }, { actions.menu(e) }) { copy -> drag(e, copy) },
+                                        .driveGestures({ actions.open(e) }, { actions.menu(e, FOLDER) }) { copy -> drag(e, copy) },
                                 )
-                                EntryMenu(e, actions)
+                                EntryMenu(e, actions, FOLDER)
                             }
                         }
                     }
@@ -464,12 +464,13 @@ class EntryActions(
     private val saveLauncher: androidx.activity.result.ActivityResultLauncher<String>,
 ) {
     /** The entry whose menu is open. */
-    var menuFor by mutableStateOf<String?>(null)
+    /** Whose menu is open, and where (the same entry shows in the tree and in its folder: the menu drops from the one pressed). */
+    var menuFor by mutableStateOf<Pair<String, String>?>(null)
     var renaming by mutableStateOf<DriveEntry?>(null)
     var deleting by mutableStateOf<DriveEntry?>(null)
     var saving: DriveEntry? = null
 
-    fun menu(e: DriveEntry) { menuFor = e.path }
+    fun menu(e: DriveEntry, where: String) { menuFor = e.path to where }
 
     private fun run(what: String?, block: suspend () -> Unit) = scope.launch {
         onBusy(what)
@@ -566,10 +567,14 @@ private fun rememberEntryActions(onOpen: (DriveEntry) -> Unit, onBusy: (String?)
     return actions
 }
 
+/** Where an entry's menu drops from: its row in the tree, or its place in the folder shown. */
+private const val TREE = "tree"
+private const val FOLDER = "folder"
+
 /** An entry's menu, dropped down from it while open. */
 @Composable
-private fun EntryMenu(e: DriveEntry, actions: EntryActions) {
-    val open = actions.menuFor == e.path
+private fun EntryMenu(e: DriveEntry, actions: EntryActions, where: String) {
+    val open = actions.menuFor == (e.path to where)
     if (!open) return
     val close = { actions.menuFor = null }
     val readOnly = DriveProvider.readOnly(e.path)
@@ -663,7 +668,7 @@ private fun FolderTree(
                     Modifier.fillMaxWidth().padding(horizontal = 4.dp).clip(RoundedCornerShape(6.dp))
                         .background(if (hover) MaterialTheme.colorScheme.primaryContainer else if (highlighted) on else androidx.compose.ui.graphics.Color.Transparent)
                         .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path), onHover = { hover = it }) { drop(e.path, it) } else Modifier)
-                        .driveGestures({ if (e.folder) { expanded[e.path] = true; actions.open(e) } else actions.open(e) }, { actions.menu(e) }) { copy -> drag(e, copy) }
+                        .driveGestures({ if (e.folder) { expanded[e.path] = true; actions.open(e) } else actions.open(e) }, { actions.menu(e, TREE) }) { copy -> drag(e, copy) }
                         .padding(start = (row.depth * 14).dp, end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -677,7 +682,7 @@ private fun FolderTree(
                     Icon(iconOf(e), null, Modifier.size(18.dp), tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(e.name, Modifier.padding(start = 8.dp, top = 7.dp, bottom = 7.dp), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                EntryMenu(e, actions)
+                EntryMenu(e, actions, TREE)
             }
         }
     }
