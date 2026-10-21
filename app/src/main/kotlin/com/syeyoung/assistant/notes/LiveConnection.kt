@@ -8,6 +8,7 @@ import io.ktor.websocket.readBytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -19,7 +20,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * A live document's line to the API (y-websocket, see [com.syeyoung.assistant.data.Api.sync]): for
  * a note ([NoteDocument]) or a notebook. Connected, and again after it drops (a little later each
- * time, up to half a minute), until let go or refused.
+ * time, up to half a minute), until let go or refused. A connection that hasn't opened within
+ * [OPENING] is given up and tried again (after sleep, one can hang on the way to the server).
  *
  * What comes in is handed to [receive] on the main thread, as the document takes it (so a view
  * showing the document changes with it); its reply goes back. [greeting] is the document's sync step 1,
@@ -53,8 +55,10 @@ class LiveConnection(
         var wait = 1000L
         while (scope.isActive && !refused) {
             onStatus("connecting", null)
-            try {
+            val opened = java.util.concurrent.atomic.AtomicBoolean(false)
+            val attempt = scope.async {
                 Repo.get(app).api().sync(path) {
+                    opened.set(true)
                     wait = 1000L
                     // Old messages: what they carried is in the sync this connection starts with.
                     while (pending.tryReceive().isSuccess) Unit
@@ -77,10 +81,20 @@ class LiveConnection(
                         sender.cancel()
                     }
                 }
+            }
+            val watchdog = scope.launch {
+                delay(OPENING)
+                if (!opened.get()) attempt.cancel()
+            }
+            try {
+                attempt.await()
             } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
+                if (!scope.isActive) throw e
+                android.util.Log.w("LiveConnection", "$path: not opened within ${OPENING / 1000} s")
             } catch (e: Exception) {
                 android.util.Log.w("LiveConnection", "$path: ${e.message}")
+            } finally {
+                watchdog.cancel()
             }
             if (refused || !scope.isActive) break
             onStatus("offline", null)
@@ -96,6 +110,9 @@ class LiveConnection(
     }
 
     companion object {
+        /** How long a connection may take to open. */
+        private const val OPENING = 15_000L
+
         /** Whether [message] is the server's sync step 2 (y-protocols: sync, step 2): the document is all here. */
         fun isSyncStep2(message: ByteArray) = message.size > 1 && message[0] == 0.toByte() && message[1] == 1.toByte()
     }
