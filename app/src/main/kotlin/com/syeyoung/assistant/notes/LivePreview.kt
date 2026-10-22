@@ -100,6 +100,8 @@ class LivePreview(
                 Element.InlineCode -> { put(Code(fonts.code, style.codeSize), from, to); if (!editing) hideMarks(s) }
                 is Element.Link -> { put(Link(e.url, style.accent), from, to); if (!editing) hideMarks(s) }
                 is Element.Autolink -> put(Link(e.url, style.accent), from, to)
+                // What it means is asked when it's followed.
+                is Element.Mention -> { put(Link("mention:" + e.name, style.accent), from, to); if (!editing) hideMarks(s) }
                 is Element.Math -> {
                     if (editing) { put(Code(fonts.code, style.mathSourceSize), from, to); put(Color(style.accent), from, to); continue }
                     val drawing = typeset(e.tex, e.display) ?: continue

@@ -386,7 +386,7 @@ class NoteEditor(
         }
     }
 
-    // ---- "[[": links to anything, found as it's typed ----
+    // ---- "@": mentions anything, found as it's typed ----
 
     private val links = android.widget.ListPopupWindow(context).apply {
         anchorView = field
@@ -394,21 +394,21 @@ class NoteEditor(
         width = (320 * context.resources.displayMetrics.density).toInt()
         inputMethodMode = android.widget.ListPopupWindow.INPUT_METHOD_NOT_NEEDED
     }
-    /** Where "[[" starts, what was asked for, and what was found. */
+    /** Where "@" is, what was asked for, and what was found. */
     private var linkAt = -1
     private var linkQuery: String? = null
     private var found: List<com.syeyoung.assistant.api.models.Ref> = emptyList()
     private var linkSearch: kotlinx.coroutines.Job? = null
 
-    /** "[[" being typed: what matches is looked up (a moment after typing stops) and offered under the cursor. */
+    /** "@" being typed: what matches is looked up (a moment after typing stops) and offered under the cursor. */
     private fun offerLinks() {
         val text = field.text
         val cursor = field.selectionStart
         if (cursor < 0 || cursor != field.selectionEnd || document.readOnly) return dismissLinks()
         val lineStart = text.lastIndexOf('\n', cursor - 1) + 1
-        val match = Regex("""\[\[([^\]\n]*)$""").find(text.substring(lineStart, cursor)) ?: return dismissLinks()
-        linkAt = lineStart + match.range.first
-        val query = match.groupValues[1]
+        val match = Regex("""(?:^|[\s(])@(\[[^\]\n]*|[^\s@\[\]()]*(?: [^\s@\[\]()]+){0,2})$""").find(text.substring(lineStart, cursor)) ?: return dismissLinks()
+        linkAt = lineStart + match.groups[1]!!.range.first - 1
+        val query = match.groupValues[1].removePrefix("[")
         if (query == linkQuery) return
         linkQuery = query
         linkSearch?.cancel()
@@ -442,18 +442,17 @@ class NoteEditor(
         links.dismiss()
     }
 
-    /** A found thing chosen: a Markdown link to it in place of "[[…" (and the "]]" after, if typed); a drive note or file relative to this note. */
+    /** A found thing chosen, in place of "@…": @Name for what has a name (a task's title, a note's or file's name...), a Markdown link for the rest. */
     private fun insertLink(r: com.syeyoung.assistant.api.models.Ref) {
         dismissLinks()
-        val page = Regex("""^(?:https?://[^/]+)?/files/([^?#]+)$""").find(r.url)
-        val href = page?.let { m ->
-            val drive = "Projects/" + m.groupValues[1].split('/').joinToString("/") { java.net.URLDecoder.decode(it.replace("+", "%2B"), Charsets.UTF_8) }
-            com.syeyoung.assistant.core.relativeLink(path.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }, drive)
-        } ?: r.url
-        val text = "[${r.title.replace("[", "\\[").replace("]", "\\]")}]($href)"
+        val text = when (r.kind.value) {
+            "task" -> com.syeyoung.assistant.core.mentionText(r.title.replace(Regex("^#\\d+ "), ""))
+            "event", "project", "note", "file" -> com.syeyoung.assistant.core.mentionText(r.title)
+            else -> "[${r.title.replace("[", "\\[").replace("]", "\\]")}](${r.url})"
+        }
         val from = linkAt.coerceIn(0, field.text.length)
         var to = field.selectionStart.coerceAtLeast(from)
-        if (field.text.length >= to + 2 && field.text.substring(to, to + 2) == "]]") to += 2
+        if (field.text.length > to && field.text[to] == ']') to += 1
         field.text.replace(from, to, text)
         field.setSelection((from + text.length).coerceAtMost(field.text.length))
     }

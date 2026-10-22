@@ -48,6 +48,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import com.syeyoung.assistant.data.value
+import kotlinx.coroutines.launch
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.syeyoung.assistant.drive.DriveProvider
@@ -100,7 +103,7 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit, writi
     var editing by remember(path) { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     val editor = remember(path) {
-        NoteEditor(context, path, onStatus = { s, m -> state = s; message = m }, onLink = { href, resolved -> follow(context, href, resolved) }, writing = writing)
+        NoteEditor(context, path, onStatus = { s, m -> state = s; message = m }, onLink = { href, resolved -> follow(context, href, resolved, path) }, writing = writing)
     }
     DisposableEffect(editor) {
         editor.onEditing = { editing = it }
@@ -160,7 +163,21 @@ private fun statusText(state: String, message: String?) = when (state) {
 }
 
 /** A link followed in a note: notes open here, PDFs in the notebook editor, other drive files in their app, web addresses in the browser. */
-private fun follow(context: Context, href: String, resolved: String?) {
+private fun follow(context: Context, href: String, resolved: String?, note: String? = null) {
+    // A mention: what it means here (asked of the server), opened as its link would be.
+    if (href.startsWith("mention:")) {
+        val scope = (context as? androidx.lifecycle.LifecycleOwner)?.lifecycleScope ?: return
+        scope.launch {
+            val r = runCatching { com.syeyoung.assistant.data.Repo.get(context).api().refs.mention(href.removePrefix("mention:"), note).value() }.getOrNull()
+                ?: return@launch Toast.makeText(context, "Nothing's called ${href.removePrefix("mention:")}", Toast.LENGTH_SHORT).show()
+            com.syeyoung.assistant.ui.drivePathOf(r.url)?.let { return@launch follow(context, r.url, it) }
+            com.syeyoung.assistant.data.taskOf(r.url)?.let { id ->
+                return@launch context.startActivity(Intent(context, com.syeyoung.assistant.MainActivity::class.java).putExtra(com.syeyoung.assistant.MainActivity.EXTRA_TASK, id.toString()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            }
+            follow(context, r.url, null)
+        }
+        return
+    }
     val view = { uri: Uri, type: String? ->
         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).apply { if (type != null) setDataAndType(uri, type) else data = uri }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
             .onFailure { Toast.makeText(context, "Nothing here opens it", Toast.LENGTH_SHORT).show() }
