@@ -83,6 +83,36 @@
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
 
+        <!-- Quick notes: what the Quick Settings tiles start (makes the note, opens it, shows nothing itself). -->
+        <activity
+            android:name=".notes.QuickNoteActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:taskAffinity="" />
+
+        <!-- Quick Settings tiles: a note, or a notebook page, for the class on now. -->
+        <service
+            android:name=".notes.QuickNoteTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_quick_note"
+            android:label="Quick note"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".notes.QuickNotebookTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_quick_notebook"
+            android:label="Notebook page"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!-- The drive as a storage location ("Assistant" in every app's file picker). -->
         <provider
             android:name=".drive.DriveProvider"

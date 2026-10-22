@@ -40,6 +40,8 @@ class NoteEditor(
     val path: String,
     private val onStatus: (state: String, message: String?) -> Unit,
     private val onLink: (href: String, resolvedPath: String?) -> Unit,
+    /** Opened to write in, at the end (a quick note: its heading is the class and day), not as a preview. */
+    private val writing: Boolean = false,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val document = NoteDocument(context, path, onStatus, ::remote)
@@ -146,9 +148,14 @@ class NoteEditor(
             show(opened)
             field.isEnabled = true
             // Opened as a preview, at its start; editing is asked for (Edit).
-            field.setSelection(0)
-            view.scrollTo(0, 0)
-            setEditing(false)
+            if (writing) {
+                setEditing(true)
+                field.setSelection(field.text.length)
+            } else {
+                field.setSelection(0)
+                view.scrollTo(0, 0)
+                setEditing(false)
+            }
         }
     }
 

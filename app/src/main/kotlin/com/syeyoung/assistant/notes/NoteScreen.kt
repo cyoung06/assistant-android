@@ -60,10 +60,11 @@ class NoteActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val path = intent.getStringExtra(EXTRA_PATH) ?: return finish()
+        val writing = intent.getBooleanExtra(EXTRA_WRITE, false)
         setContent {
             AssistantTheme {
                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).safeDrawingPadding()) {
-                    NoteEditorPane(path, fullScreen = true, onClose = ::finish)
+                    NoteEditorPane(path, fullScreen = true, onClose = ::finish, writing = writing)
                 }
             }
         }
@@ -71,12 +72,13 @@ class NoteActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_PATH = "path"
+        private const val EXTRA_WRITE = "write"
         /**
          * Opens the note at [path] in a window of its own (one per note: opened again, it's the same
          * one); [beside] puts it next to this one, in split screen.
          */
-        fun open(context: Context, path: String, beside: Boolean = false) {
-            val intent = Intent(context, NoteActivity::class.java).setData(DriveProvider.uri(context, path)).putExtra(EXTRA_PATH, path)
+        fun open(context: Context, path: String, beside: Boolean = false, writing: Boolean = false) {
+            val intent = Intent(context, NoteActivity::class.java).setData(DriveProvider.uri(context, path)).putExtra(EXTRA_PATH, path).putExtra(EXTRA_WRITE, writing)
             if (context !is android.app.Activity || beside) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             if (beside) intent.addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
             context.startActivity(intent)
@@ -90,7 +92,7 @@ class NoteActivity : ComponentActivity() {
  * shows when coming back, unless it's being edited here (then saving asks what to keep).
  */
 @Composable
-fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
+fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit, writing: Boolean = false) {
     val context = LocalContext.current
     var state by remember(path) { mutableStateOf("loading") }
     var message by remember(path) { mutableStateOf<String?>(null) }
@@ -98,7 +100,7 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit) {
     var editing by remember(path) { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     val editor = remember(path) {
-        NoteEditor(context, path, onStatus = { s, m -> state = s; message = m }, onLink = { href, resolved -> follow(context, href, resolved) })
+        NoteEditor(context, path, onStatus = { s, m -> state = s; message = m }, onLink = { href, resolved -> follow(context, href, resolved) }, writing = writing)
     }
     DisposableEffect(editor) {
         editor.onEditing = { editing = it }
