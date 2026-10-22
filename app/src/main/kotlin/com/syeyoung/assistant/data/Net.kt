@@ -95,6 +95,7 @@ class Api(endpoint: Endpoint) {
     val refs = RefControllerApi(base, engine, config)
     val mail = MailControllerApi(base, engine, config)
     val triage = TriageControllerApi(base, engine, config)
+    val today = com.syeyoung.assistant.api.apis.TodayControllerApi(base, engine, config)
     val drive = com.syeyoung.assistant.api.apis.DriveControllerApi(base, engine, config)
     private val http = HttpClient(engine, config)
 

@@ -140,6 +140,9 @@ internal object FilesNav {
     val expanded = mutableMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateMap<String, Boolean>>()
     /** What was last copied or cut, to paste. */
     var clip by mutableStateOf<DriveClip?>(null)
+
+    /** Shows [path] in Files (the first pane): its storage, the folder it's in, the file previewed. */
+    fun reveal(path: String) = openFrom(path, 0) { v -> if (v == null) open.remove(0) else open[0] = v }
 }
 
 /** Files, in one pane or two side by side. */

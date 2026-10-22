@@ -157,6 +157,7 @@ fun EventEditor(target: EventTarget, onDone: () -> Unit) {
                 }
                 if (f.repeats) RepeatFields(f, enabled, set)
             }
+            OutlinedTextField(f.location, { set(f.copy(location = it)) }, Modifier.fillMaxWidth(), label = { Text("Room or place") }, singleLine = true, enabled = enabled)
             OutlinedTextField(f.notes, { set(f.copy(notes = it)) }, Modifier.fillMaxWidth().heightIn(min = 120.dp), label = { Text("Notes") }, enabled = enabled)
             if (existing != null && !fixed && f.repeats && existing.occurrence !in f.skipped) {
                 HorizontalDivider()

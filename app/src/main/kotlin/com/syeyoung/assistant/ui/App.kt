@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoveToInbox
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
@@ -66,6 +67,7 @@ import java.util.UUID
 
 sealed interface Screen {
     val title: String
+    data object Today : Screen { override val title = "Today" }
     data object Triage : Screen { override val title = "Triage" }
     data object Active : Screen { override val title = "Active" }
     data object Backlog : Screen { override val title = "Backlog" }
@@ -90,7 +92,9 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     var mail by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    var screen by remember { mutableStateOf<Screen>(Screen.Active) }
+    // A phone starts on the day at a glance; a tablet on the task list.
+    val phone = LocalConfiguration.current.smallestScreenWidthDp < 600
+    var screen by remember { mutableStateOf<Screen>(if (phone) Screen.Today else Screen.Active) }
     var detail by remember { mutableStateOf(openTask) }
     var creating by remember { mutableStateOf(false) }
     var event by remember { mutableStateOf<EventTarget?>(null) }
@@ -147,6 +151,10 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
         Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 12.dp)) {
             Text("Assistant", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.titleLarge)
             val waiting = triageCount(triage)
+            NavigationDrawerItem(
+                label = { Text("Today") }, icon = { Icon(Icons.Filled.WbSunny, null) },
+                selected = screen == Screen.Today, onClick = { screen = Screen.Today; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp),
+            )
             NavigationDrawerItem(
                 label = { Text("Triage") }, icon = { Icon(Icons.Filled.MoveToInbox, null) }, badge = { if (waiting > 0) Text("$waiting") },
                 selected = screen == Screen.Triage, onClick = { screen = Screen.Triage; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp),
@@ -224,6 +232,10 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                         },
                     ) }
                     Screen.Calendar -> CalendarScreen(calendarVersion, onOpenTask = { detail = it }, onOpenEvent = { event = it }, onDay = { calendarDay = it })
+                    Screen.Today -> TodayScreen(
+                        onOpenTask = { detail = it }, onOpenEvent = { event = it }, onTriage = { screen = Screen.Triage },
+                        onOpenFile = { FilesNav.reveal(it); screen = Screen.Files },
+                    )
                     Screen.Triage -> TriageScreen(onOpenTask = { detail = it }, onOpenMail = { mail = it })
                     Screen.Settings -> SettingsScreen()
                     Screen.Notebooks -> NotebooksScreen()

@@ -26,6 +26,8 @@ enum class Freq { daily, weekly, monthly }
 data class EventForm(
     val title: String = "",
     val notes: String = "",
+    /** Where it is (a lecture's room). */
+    val location: String = "",
     val allDay: Boolean = false,
     val date: LocalDate,
     val endDate: LocalDate = date,
@@ -47,6 +49,7 @@ data class EventForm(
     fun toJson(zone: ZoneId = ZoneId.systemDefault(), creating: Boolean = false): JsonObject = buildJsonObject {
         put("title", title.trim())
         put("notes", notes)
+        put("location", location.trim().ifEmpty { null }?.let(::JsonPrimitive) ?: JsonNull)
         if (allDay) {
             put("startDate", date.toString())
             put("endDate", maxOf(date, endDate).toString())
@@ -75,6 +78,7 @@ data class EventForm(
             return EventForm(
                 title = e.title,
                 notes = e.notes,
+                location = e.location.orEmpty(),
                 allDay = e.startDate != null,
                 date = date,
                 endDate = e.endDate?.let(LocalDate::parse) ?: date,
