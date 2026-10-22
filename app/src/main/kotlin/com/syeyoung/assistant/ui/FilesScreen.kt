@@ -75,6 +75,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
@@ -386,7 +387,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                 }
                 error?.let { Text("Couldn't reach the drive: $it", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
                 if (offline) Text("Offline: as last seen on this device. Files marked with a pin open; starred folders are kept whole.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (locked) Text("From PLMS, kept as it is there: drag a copy out to write on it.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (locked) Text("From PLMS, kept as it is there: Annotate a PDF (its menu) to write on it in a copy.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 val list = entries.orEmpty()
                 if (entries != null && list.isEmpty()) Text("Nothing here yet. Upload files, or save notebooks here.", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (icons) {
@@ -558,6 +559,13 @@ class EntryActions(
         FilesNav.changes++
     }
 
+    /** Writes on the course PDF [e] in its copy (made the first time, in the project's Notes). */
+    fun annotate(e: DriveEntry) = run("Copying…") {
+        val a = repo.api().driveAnnotate(e.path)
+        FilesNav.changes++
+        Notebooks.open(context, DriveProvider.uri(context, a.copy), false)
+    }
+
     fun openInEditor(e: DriveEntry, beside: Boolean = false) = Notebooks.open(context, DriveProvider.uri(context, e.path), beside)
     /** A note in a window of its own, beside this one (split screen). */
     fun openBeside(e: DriveEntry) = com.syeyoung.assistant.notes.NoteActivity.open(context, e.path, beside = true)
@@ -667,6 +675,8 @@ private fun EntryMenu(e: DriveEntry, actions: EntryActions, where: String) {
         fun Item(text: String, icon: ImageVector, color: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified, action: () -> Unit) =
             androidx.compose.material3.DropdownMenuItem({ Text(text, color = color) }, { close(); action() }, leadingIcon = { Icon(icon, null, tint = if (color == androidx.compose.ui.graphics.Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else color) })
         Item("Open", if (e.folder) Icons.Filled.FolderOpen else Icons.Filled.Visibility) { actions.open(e) }
+        // Course PDFs are written on in a copy in the project's Notes (the writing can follow PLMS's updates).
+        if (pdf && readOnly) Item("Annotate", Icons.Filled.Draw) { actions.annotate(e) }
         if (pdf) Item("Open in editor", Icons.Filled.EditNote) { actions.openInEditor(e) }
         // Beside what's open (split screen): a problem PDF next to the note it's worked in.
         if (pdf) Item("Open in editor beside", Icons.Filled.EditNote) { actions.openInEditor(e, beside = true) }

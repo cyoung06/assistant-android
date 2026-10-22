@@ -289,6 +289,33 @@ class NotebookActivity : ComponentActivity() {
         }
     }
 
+    /** A copy of a course file whose course file was updated since: the person's asked what to do. */
+    private fun checkSource() {
+        val path = placePath ?: return
+        lifecycleScope.launch {
+            val a = runCatching { com.syeyoung.assistant.data.Repo.get(this@NotebookActivity).api().driveAnnotation(path) }.getOrNull() ?: return@launch
+            if (a.copy == path && a.sourceChanged) ui.updatedSource = a.source
+        }
+    }
+
+    /** The writing carried over to the course file's new version (on the server; the pages change here as it does). */
+    private fun carryOver() {
+        val path = placePath ?: return
+        ui.carrying = true
+        lifecycleScope.launch {
+            runCatching { com.syeyoung.assistant.data.Repo.get(this@NotebookActivity).api().driveCarryOver(path) }
+                .onSuccess { ui.updatedSource = null }
+                .onFailure { e -> Toast.makeText(this@NotebookActivity, "Couldn't carry it over: ${e.message}", Toast.LENGTH_LONG).show() }
+            ui.carrying = false
+        }
+    }
+
+    private fun keepAsItIs() {
+        val path = placePath ?: return
+        ui.updatedSource = null
+        lifecycleScope.launch { runCatching { com.syeyoung.assistant.data.Repo.get(this@NotebookActivity).api().driveKeepAnnotation(path) } }
+    }
+
     /** The page (and tool) kept a moment after it changes. */
     private fun keepPlace() {
         val path = placePath ?: return
@@ -331,6 +358,7 @@ class NotebookActivity : ComponentActivity() {
                 view.setDocument(o.sizes, o.strokes, o.images, o.links)
                 restorePlace()
                 view.onEdit = { rs, ps, ri, pi -> sync.edited(rs, ps, ri, pi) }
+                checkSource()
                 ui.status = ""
             }.onFailure { e ->
                 Toast.makeText(this@NotebookActivity, "Couldn't open this notebook: ${e.message}", Toast.LENGTH_LONG).show()
@@ -341,6 +369,20 @@ class NotebookActivity : ComponentActivity() {
 
     @Composable
     private fun Dialogs() {
+        ui.updatedSource?.let { source ->
+            AlertDialog(
+                onDismissRequest = { if (!ui.carrying) ui.updatedSource = null },
+                title = { Text("Updated on PLMS") },
+                text = { Text("${source.substringAfterLast('/')} has a new version. Carry your writing over to it? Each page goes to the new page with its text; pages taken out are kept at the end.") },
+                confirmButton = { TextButton({ carryOver() }, enabled = !ui.carrying) { Text(if (ui.carrying) "Carrying over…" else "Carry over") } },
+                dismissButton = {
+                    androidx.compose.foundation.layout.Row {
+                        TextButton({ ui.updatedSource = null }, enabled = !ui.carrying) { Text("Later") }
+                        TextButton({ keepAsItIs() }, enabled = !ui.carrying) { Text("Keep as it is") }
+                    }
+                },
+            )
+        }
         if (ui.confirmDelete) {
             AlertDialog(
                 onDismissRequest = { ui.confirmDelete = false },
@@ -779,6 +821,9 @@ class ToolbarState {
     var canRedo by mutableStateOf(false)
     var status by mutableStateOf("")
     var confirmDelete by mutableStateOf(false)
+    /** The course file this notebook is a copy of, updated on PLMS since: offered to carry the writing over. */
+    var updatedSource by mutableStateOf<String?>(null)
+    var carrying by mutableStateOf(false)
     var jumping by mutableStateOf(false)
     var browsing by mutableStateOf(false)
     /** Marking a region to copy as a picture (see NotebookView.clipping). */
