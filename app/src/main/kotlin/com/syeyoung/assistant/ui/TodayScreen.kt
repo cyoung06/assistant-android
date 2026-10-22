@@ -105,6 +105,10 @@ fun TodayScreen(onOpenTask: (UUID) -> Unit, onOpenEvent: (EventTarget) -> Unit, 
                 }
             }
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.material3.FilledTonalButton({ context.startActivity(com.syeyoung.assistant.notes.QuickNoteActivity.intent(context, notebook = false)) }) { Text("Quick note") }
+            androidx.compose.material3.FilledTonalButton({ context.startActivity(android.content.Intent(context, com.syeyoung.assistant.capture.ClassPhotoActivity::class.java)) }) { Text("Class photo") }
+        }
         Section("Due soon") {
             if (t.due.isEmpty()) Hint("Nothing due in the next two days.")
             t.due.forEach { task ->

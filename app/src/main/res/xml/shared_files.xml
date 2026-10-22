@@ -2,4 +2,6 @@
 <!-- Files the app hands to other apps (exported pages, to share or print). -->
 <paths>
     <cache-path name="exports" path="exports/" />
+    <!-- Where the camera puts a class photo before it's sent. -->
+    <cache-path name="photos" path="photos/" />
 </paths>

@@ -151,6 +151,19 @@ class Api(endpoint: Endpoint) {
         )
     }.body()
 
+    /** A photo for the class on now, into its project's folder; where it went. */
+    suspend fun classPhoto(bytes: ByteArray, mimeType: String): String {
+        val r = send {
+            http.submitFormWithBinaryData("$base/api/v1/drive/photo", formData {
+                append("file", bytes, Headers.build {
+                    append(HttpHeaders.ContentType, mimeType)
+                    append(HttpHeaders.ContentDisposition, "filename=\"photo.jpg\"")
+                })
+            })
+        }
+        return AppJson.parseToJsonElement(r.bodyAsText()).jsonObject["paths"]!!.jsonArray.first().jsonPrimitive.content
+    }
+
     // ---- the drive (paths from its root; folders end with "/") ----
 
     private fun drivePath(p: String) = java.net.URLEncoder.encode(p, Charsets.UTF_8).replace("+", "%20")

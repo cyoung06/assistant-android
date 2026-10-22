@@ -162,6 +162,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
             PaletteCommand("New task", "create add todo") { creating = true },
             PaletteCommand("Quick note", "new note write") { context.startActivity(com.syeyoung.assistant.notes.QuickNoteActivity.intent(context, notebook = false)) },
             PaletteCommand("Notebook page", "new notebook pen write") { context.startActivity(com.syeyoung.assistant.notes.QuickNoteActivity.intent(context, notebook = true)) },
+            PaletteCommand("Class photo", "camera whiteboard handout picture") { context.startActivity(android.content.Intent(context, com.syeyoung.assistant.capture.ClassPhotoActivity::class.java)) },
             PaletteCommand("Capture", "share screenshot triage") { context.startActivity(android.content.Intent(context, com.syeyoung.assistant.capture.CaptureActivity::class.java)) },
             PaletteCommand("Settings") { screen = Screen.Settings },
         ),

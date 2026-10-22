@@ -90,6 +90,14 @@
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
 
+        <!-- A class photo: the camera, then into the class's project (shows nothing itself). -->
+        <activity
+            android:name=".capture.ClassPhotoActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:taskAffinity="" />
+
         <!-- Quick notes: what the Quick Settings tiles start (makes the note, opens it, shows nothing itself). -->
         <activity
             android:name=".notes.QuickNoteActivity"

@@ -98,6 +98,8 @@ class TodayWidget : GlanceAppWidget() {
             Row(GlanceModifier.fillMaxWidth().padding(top = 6.dp)) {
                 Action("Quick note", com.syeyoung.assistant.notes.QuickNoteActivity.intent(context, notebook = false))
                 Spacer(GlanceModifier.width(8.dp))
+                Action("Photo", Intent(context, com.syeyoung.assistant.capture.ClassPhotoActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                Spacer(GlanceModifier.width(8.dp))
                 Action("Capture", Intent(context, com.syeyoung.assistant.capture.CaptureActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
         }
