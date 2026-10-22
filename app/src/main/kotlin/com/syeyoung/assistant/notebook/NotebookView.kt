@@ -580,7 +580,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 // The fading pen's: shown until they fade, not the notebook's.
                 val (faded, added) = finished.partition { it.tool == Tool.FADING }
                 if (faded.isNotEmpty()) {
-                    fading += faded
+                    // A laser pointer's: the red line written, its white core over it.
+                    fading += faded.flatMap { listOf(it, InkStroke(InkIds.next(), it.page, Tool.FADING, it.stroke.copy(laserCore()))) }
                     keepFading()
                     postDelayed(fadeLater, FADE_AFTER_MS)
                 }
@@ -1106,7 +1107,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 val page = pageAt(e.x, e.y) ?: return
                 penPointer = e.getPointerId(0)
                 val toPage = Matrix().also { pageMatrix(page).invert(it) }
-                val brush = if (tool == Tool.HIGHLIGHTER) brushFor(Tool.HIGHLIGHTER, highlighterColor, highlighterSize) else brushFor(Tool.PEN, penColor, penSize)
+                val brush = when (tool) {
+                    Tool.HIGHLIGHTER -> brushFor(Tool.HIGHLIGHTER, highlighterColor, highlighterSize)
+                    Tool.FADING -> laserOuter()
+                    else -> brushFor(Tool.PEN, penColor, penSize)
+                }
                 val id = ink.startStroke(e, penPointer, brush, toPage)
                 strokePages[id] = page to (if (tool == Tool.HIGHLIGHTER || tool == Tool.FADING) tool else Tool.PEN)
                 if (tool == Tool.FADING) keepFading()

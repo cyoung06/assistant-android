@@ -14,6 +14,11 @@ val SIZE_RANGES = mapOf(Tool.PEN to 0.15f..4f, Tool.HIGHLIGHTER to 3f..24f, Tool
 val PEN_COLORS = listOf(0xFF1B1B1F.toInt(), 0xFF1E5BD8.toInt(), 0xFFD93025.toInt(), 0xFF188038.toInt())
 val HIGHLIGHTER_COLORS = listOf(0x66FFD600, 0x6634C759, 0x66FF7EB6, 0x6640A9FF)
 
+/** The fading pen looks like a laser pointer: a red line with a white core (whatever colour is picked). */
+const val LASER_RED = 0xFFE53935.toInt()
+fun laserOuter(): Brush = Brush.createWithColorIntArgb(StockBrushes.marker(), LASER_RED, 3.2f, 0.02f)
+fun laserCore(): Brush = Brush.createWithColorIntArgb(StockBrushes.marker(), 0xFFFFFFFF.toInt(), 1.1f, 0.02f)
+
 /** Strokes are in page coordinates: PDF points from the page's top-left corner. */
 fun brushFor(tool: Tool, color: Int, size: Float): Brush = when (tool) {
     // DISCARD keeps a stroke's own overlaps from darkening, so it looks the same once saved into the PDF.

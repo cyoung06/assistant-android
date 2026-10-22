@@ -182,7 +182,7 @@ private fun Tools(ui: ToolbarState, onChange: () -> Unit) {
             Box(
                 Modifier.size(ITEM).clip(CircleShape)
                     .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-                    .clickable { if (selected) sizing = t != Tool.SELECT else { ui.tool = t; onChange() } },
+                    .clickable { if (selected) sizing = t != Tool.SELECT && t != Tool.FADING else { ui.tool = t; onChange() } },
                 contentAlignment = Alignment.Center,
             ) { ToolGlyph(t, if (t == Tool.ERASER || t == Tool.SELECT) MaterialTheme.colorScheme.onSurface else colorFor(ui, t)) }
             DropdownMenu(sizing, { sizing = false }) { SizePanel(ui, t, onChange) }
@@ -235,11 +235,9 @@ private fun ToolGlyph(t: Tool, color: Color) {
             }
             Tool.HIGHLIGHTER -> drawLine(color, Offset(w * 0.2f, w * 0.8f), Offset(w * 0.8f, w * 0.2f), strokeWidth = w * 0.32f, cap = StrokeCap.Square)
             Tool.FADING -> {
-                // A nib, its line trailing off into dots.
-                drawLine(outline, Offset(w * 0.45f, w * 0.55f), Offset(w * 0.85f, w * 0.15f), strokeWidth = w * 0.12f, cap = StrokeCap.Round)
-                drawCircle(color, w * 0.1f, Offset(w * 0.45f, w * 0.55f))
-                drawCircle(color.copy(alpha = 0.6f), w * 0.07f, Offset(w * 0.3f, w * 0.7f))
-                drawCircle(color.copy(alpha = 0.3f), w * 0.05f, Offset(w * 0.17f, w * 0.83f))
+                // A laser pointer's dot and trail: red with a white core.
+                drawLine(Color(LASER_RED), Offset(w * 0.15f, w * 0.85f), Offset(w * 0.75f, w * 0.25f), strokeWidth = w * 0.22f, cap = StrokeCap.Round)
+                drawLine(Color.White, Offset(w * 0.15f, w * 0.85f), Offset(w * 0.75f, w * 0.25f), strokeWidth = w * 0.08f, cap = StrokeCap.Round)
             }
             Tool.SELECT -> {
                 // An arrow pointer.
@@ -259,7 +257,7 @@ private fun ToolGlyph(t: Tool, color: Color) {
 
 @Composable
 private fun Swatches(ui: ToolbarState, onChange: () -> Unit) {
-    if (ui.tool == Tool.ERASER || ui.tool == Tool.SELECT) return
+    if (ui.tool == Tool.ERASER || ui.tool == Tool.SELECT || ui.tool == Tool.FADING) return
     val hl = ui.tool == Tool.HIGHLIGHTER
     val colors = if (hl) HIGHLIGHTER_COLORS else PEN_COLORS
     colors.forEachIndexed { i, c ->
