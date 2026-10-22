@@ -34,27 +34,54 @@ import com.syeyoung.assistant.data.closed
 import com.syeyoung.assistant.data.dueText
 import com.syeyoung.assistant.data.plainText
 import com.syeyoung.assistant.data.sortTasks
+import com.syeyoung.assistant.data.value
+import androidx.glance.appwidget.cornerRadius
 import java.time.LocalDate
 
-/** Home-screen widget: what's overdue and due today, from the last sync. */
+/**
+ * Home-screen widget, the day at a glance: the next class (its time and room), what's overdue and
+ * due today (from the last sync), and a quick note or capture a tap away.
+ */
 class TodayWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val today = LocalDate.now()
         val tasks = Repo.get(context).state.value.data.tasks
         val due = sortTasks(tasks.filter { !it.closed && it.due != null && (it.overdue || !LocalDate.parse(it.due!!.date).isAfter(today)) })
-        provideContent { GlanceTheme { Content(context, due, today) } }
+        val next = nextClass(context)
+        provideContent { GlanceTheme { Content(context, next, due, today) } }
+    }
+
+    /** The next class as one line ("확률및통계 · Mon 12:30 · Science 101"): from the server, else as last known. */
+    private suspend fun nextClass(context: Context): String? {
+        val prefs = context.getSharedPreferences("widget", Context.MODE_PRIVATE)
+        val fresh = runCatching {
+            kotlinx.coroutines.withTimeout(5_000) { Repo.get(context).api().today.today().value() }.next?.let { n ->
+                val start = java.time.OffsetDateTime.parse(n.event.start!!).atZoneSameInstant(java.time.ZoneId.systemDefault())
+                val day = if (start.toLocalDate() == LocalDate.now()) "" else start.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.ENGLISH) + " "
+                listOfNotNull(n.event.title, day + start.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")), n.event.location).joinToString(" · ")
+            }.orEmpty()
+        }.onSuccess { prefs.edit().putString("next", it).apply() }
+        return (fresh.getOrNull() ?: prefs.getString("next", null))?.ifEmpty { null }
     }
 
     @Composable
-    private fun Content(context: Context, due: List<TaskResponse>, today: LocalDate) {
+    private fun Content(context: Context, next: String?, due: List<TaskResponse>, today: LocalDate) {
+        val open = Intent(context, MainActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         Column(GlanceModifier.fillMaxSize().background(GlanceTheme.colors.widgetBackground).padding(12.dp)) {
+            if (next != null) {
+                Text(
+                    next, maxLines = 1,
+                    style = TextStyle(fontWeight = FontWeight.Bold, fontSize = 14.sp, color = GlanceTheme.colors.primary),
+                    modifier = GlanceModifier.fillMaxWidth().padding(bottom = 6.dp).clickable(actionStartActivity(open)),
+                )
+            }
             Text(
                 if (due.isEmpty()) "Nothing due today" else "Due · ${due.size}",
                 style = TextStyle(fontWeight = FontWeight.Bold, fontSize = 14.sp, color = GlanceTheme.colors.onSurface),
                 modifier = GlanceModifier.clickable(actionStartActivity(Intent(context, MainActivity::class.java))),
             )
             Spacer(GlanceModifier.width(4.dp))
-            LazyColumn {
+            LazyColumn(GlanceModifier.defaultWeight()) {
                 items(due, itemId = { it.number }) { t ->
                     Row(
                         GlanceModifier.fillMaxWidth().padding(vertical = 4.dp)
@@ -68,7 +95,21 @@ class TodayWidget : GlanceAppWidget() {
                     }
                 }
             }
+            Row(GlanceModifier.fillMaxWidth().padding(top = 6.dp)) {
+                Action("Quick note", com.syeyoung.assistant.notes.QuickNoteActivity.intent(context, notebook = false))
+                Spacer(GlanceModifier.width(8.dp))
+                Action("Capture", Intent(context, com.syeyoung.assistant.capture.CaptureActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
         }
+    }
+
+    @Composable
+    private fun Action(label: String, intent: Intent) {
+        Text(
+            label,
+            style = TextStyle(fontWeight = FontWeight.Medium, fontSize = 13.sp, color = GlanceTheme.colors.onPrimaryContainer),
+            modifier = GlanceModifier.background(GlanceTheme.colors.primaryContainer).cornerRadius(14.dp).padding(horizontal = 12.dp, vertical = 6.dp).clickable(actionStartActivity(intent)),
+        )
     }
 
     companion object {

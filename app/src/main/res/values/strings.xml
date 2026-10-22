@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="widget_description">Overdue and due today</string>
+    <string name="widget_description">The next class, what's due today, a quick note or capture</string>
 </resources>
