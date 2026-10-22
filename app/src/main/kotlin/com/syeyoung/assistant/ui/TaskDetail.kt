@@ -160,6 +160,8 @@ fun TaskDetail(id: UUID, onBack: () -> Unit, onOpenTask: (UUID) -> Unit) {
                 }),
             )
 
+            LinkedFrom("/task/${t.id}") { tid -> onOpenTask(UUID.fromString(tid)) }
+
             if (t.relations.isNotEmpty()) {
                 HorizontalDivider()
                 Text("Relations", style = MaterialTheme.typography.titleSmall)

@@ -76,12 +76,47 @@ fun RefText(markdown: String, style: TextStyle = MaterialTheme.typography.bodyMe
 /** Tasks open here ([onTask]); mail in the app's reader; PLMS on its site; everything else in the browser. */
 fun openRef(context: Context, url: String, onTask: (String) -> Unit) {
     taskOf(url)?.let { return onTask(it.toString()) }
+    // A drive note or file: a note in the note editor, a PDF in the notebook editor, the rest in their apps.
+    drivePathOf(url)?.let { path ->
+        val uri = com.syeyoung.assistant.drive.DriveProvider.uri(context, path)
+        return when {
+            com.syeyoung.assistant.notes.NoteEditor.isNote(path) -> com.syeyoung.assistant.notes.NoteActivity.open(context, path)
+            path.lowercase().endsWith(".pdf") -> com.syeyoung.assistant.notebook.Notebooks.open(context, uri)
+            else -> context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
     val intent = when {
         // The app handles mid: itself (MainActivity shows the mail).
         url.startsWith("mid:") -> Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(context.packageName)
         else -> Intent(Intent.ACTION_VIEW, Uri.parse(plmsWebUrl(url) ?: url))
     }
     context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
+/** A drive file's path, from its page in the app (`…/files/<path under Projects/>`); null for other links. */
+fun drivePathOf(url: String): String? =
+    Regex("""^(?:https?://[^/]+)?/files/([^?#]+)$""").find(url)?.let { m -> "Projects/" + m.groupValues[1].split('/').joinToString("/") { java.net.URLDecoder.decode(it.replace("+", "%2B"), Charsets.UTF_8) } }
+
+/** A drive file's page in the app, as links to it are written (matched whatever the host). */
+fun filePage(path: String) = "/files/" + path.removePrefix("Projects/").split('/').joinToString("/") { java.net.URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20") }
+
+/** What links to [url] (tasks, events, notes in the drive), each opened with a tap; nothing if none. */
+@Composable
+fun LinkedFrom(url: String, onTask: (String) -> Unit = {}) {
+    val context = LocalContext.current
+    var refs by remember(url) { mutableStateOf<List<com.syeyoung.assistant.api.models.Ref>>(emptyList()) }
+    LaunchedEffect(url) { refs = runCatching { com.syeyoung.assistant.data.Repo.get(context).api().refs.backlinks(url).value() }.getOrDefault(emptyList()) }
+    if (refs.isEmpty()) return
+    androidx.compose.foundation.layout.Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text("Linked from", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        refs.forEach { r ->
+            Text(
+                listOfNotNull(r.title, r.context).joinToString("  ·  "),
+                Modifier.fillMaxWidth().clickable { openRef(context, r.url, onTask) }.padding(vertical = 6.dp),
+                color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+    }
 }
 
 /** `@` and up to two more words before the cursor, at the start or after a space. */

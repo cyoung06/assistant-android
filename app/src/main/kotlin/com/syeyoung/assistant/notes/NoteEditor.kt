@@ -1,6 +1,7 @@
 package com.syeyoung.assistant.notes
 
 import android.annotation.SuppressLint
+import com.syeyoung.assistant.data.value
 import android.content.Context
 import android.graphics.Color
 import android.text.Editable
@@ -92,7 +93,7 @@ class NoteEditor(
 
         // The "/" menu takes the arrow keys and Enter while it's open.
         override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean =
-            (slash.isShowing && slash.onKeyDown(keyCode, event)) || super.onKeyDown(keyCode, event)
+            (slash.isShowing && slash.onKeyDown(keyCode, event)) || (links.isShowing && links.onKeyDown(keyCode, event)) || super.onKeyDown(keyCode, event)
     }.apply {
         background = null
         gravity = Gravity.TOP or Gravity.START
@@ -126,7 +127,7 @@ class NoteEditor(
             }
             override fun afterTextChanged(s: Editable) {
                 restyle(structure = true)
-                if (!loading && !applying) offerBlocks()
+                if (!loading && !applying) { offerBlocks(); offerLinks() }
             }
         })
         // A tap on a checkbox toggles its task; on a link (shown as one, not being edited), opens it.
@@ -202,6 +203,7 @@ class NoteEditor(
             input.hideSoftInputFromWindow(field.windowToken, 0)
             field.clearFocus()
             slash.dismiss()
+            links.dismiss()
         }
         restyle(structure = false)
         onEditing(on)
@@ -382,6 +384,78 @@ class NoteEditor(
             row.setTextColor(style.text.toInt())
             return row
         }
+    }
+
+    // ---- "[[": links to anything, found as it's typed ----
+
+    private val links = android.widget.ListPopupWindow(context).apply {
+        anchorView = field
+        isModal = false
+        width = (320 * context.resources.displayMetrics.density).toInt()
+        inputMethodMode = android.widget.ListPopupWindow.INPUT_METHOD_NOT_NEEDED
+    }
+    /** Where "[[" starts, what was asked for, and what was found. */
+    private var linkAt = -1
+    private var linkQuery: String? = null
+    private var found: List<com.syeyoung.assistant.api.models.Ref> = emptyList()
+    private var linkSearch: kotlinx.coroutines.Job? = null
+
+    /** "[[" being typed: what matches is looked up (a moment after typing stops) and offered under the cursor. */
+    private fun offerLinks() {
+        val text = field.text
+        val cursor = field.selectionStart
+        if (cursor < 0 || cursor != field.selectionEnd || document.readOnly) return dismissLinks()
+        val lineStart = text.lastIndexOf('\n', cursor - 1) + 1
+        val match = Regex("""\[\[([^\]\n]*)$""").find(text.substring(lineStart, cursor)) ?: return dismissLinks()
+        linkAt = lineStart + match.range.first
+        val query = match.groupValues[1]
+        if (query == linkQuery) return
+        linkQuery = query
+        linkSearch?.cancel()
+        linkSearch = scope.launch {
+            kotlinx.coroutines.delay(200)
+            val refs = runCatching { com.syeyoung.assistant.data.Repo.get(field.context).api().refs.search(query, 12).value() }.getOrNull() ?: return@launch
+            if (linkQuery != query) return@launch
+            found = refs
+            if (refs.isEmpty()) return@launch links.dismiss()
+            links.setAdapter(menuAdapter(refs.map { r -> listOfNotNull(r.title, listOfNotNull(r.kind.value.replace('_', ' '), r.context).joinToString(" · ")).joinToString("  —  ") }))
+            links.setBackgroundDrawable(android.graphics.drawable.GradientDrawable().apply {
+                val density = field.resources.displayMetrics.density
+                setColor(style.background.toInt())
+                setStroke(density.toInt().coerceAtLeast(1), style.rule.toInt())
+                cornerRadius = 8 * density
+            })
+            links.setOnItemClickListener { _, _, i, _ -> insertLink(found[i]) }
+            val layout = field.layout ?: return@launch
+            val at = field.selectionStart.coerceAtLeast(0)
+            val line = layout.getLineForOffset(at)
+            links.horizontalOffset = (layout.getPrimaryHorizontal(at) + field.totalPaddingLeft).toInt()
+            links.verticalOffset = layout.getLineBottom(line) + field.totalPaddingTop - field.height
+            links.show()
+            links.listView?.setSelection(0)
+        }
+    }
+
+    private fun dismissLinks() {
+        linkSearch?.cancel()
+        linkQuery = null
+        links.dismiss()
+    }
+
+    /** A found thing chosen: a Markdown link to it in place of "[[…" (and the "]]" after, if typed); a drive note or file relative to this note. */
+    private fun insertLink(r: com.syeyoung.assistant.api.models.Ref) {
+        dismissLinks()
+        val page = Regex("""^(?:https?://[^/]+)?/files/([^?#]+)$""").find(r.url)
+        val href = page?.let { m ->
+            val drive = "Projects/" + m.groupValues[1].split('/').joinToString("/") { java.net.URLDecoder.decode(it.replace("+", "%2B"), Charsets.UTF_8) }
+            com.syeyoung.assistant.core.relativeLink(path.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }, drive)
+        } ?: r.url
+        val text = "[${r.title.replace("[", "\\[").replace("]", "\\]")}]($href)"
+        val from = linkAt.coerceIn(0, field.text.length)
+        var to = field.selectionStart.coerceAtLeast(from)
+        if (field.text.length >= to + 2 && field.text.substring(to, to + 2) == "]]") to += 2
+        field.text.replace(from, to, text)
+        field.setSelection((from + text.length).coerceAtMost(field.text.length))
     }
 
     private fun insertBlock(item: com.syeyoung.assistant.core.SlashItem) {

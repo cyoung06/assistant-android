@@ -141,6 +141,7 @@ fun FilePreview(e: DriveEntry, fullScreen: Boolean, onClose: () -> Unit, onOpenW
                 else -> CodeText(remember(f) { f.readText() })
             }
         }
+        LinkedFrom(filePage(e.path))
     }
 }
 

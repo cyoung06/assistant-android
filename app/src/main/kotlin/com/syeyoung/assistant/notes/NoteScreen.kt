@@ -139,10 +139,12 @@ fun NoteEditorPane(path: String, fullScreen: Boolean, onClose: () -> Unit, writi
         androidx.compose.runtime.key(editor) {
             // The text column at most as wide as the web's, centred; nothing drawn outside the pane
             // (Compose doesn't clip what it holds unless asked).
-            Box(Modifier.fillMaxSize().imePadding().clipToBounds(), contentAlignment = Alignment.TopCenter) {
+            Box(Modifier.weight(1f).fillMaxWidth().imePadding().clipToBounds(), contentAlignment = Alignment.TopCenter) {
                 AndroidView({ editor.view.apply { (parent as? android.view.ViewGroup)?.removeView(this) } }, Modifier.fillMaxHeight().widthIn(max = 808.dp).fillMaxWidth())
             }
         }
+        // What links to this note, while it's read (not while typing).
+        if (!editing) com.syeyoung.assistant.ui.LinkedFrom(com.syeyoung.assistant.ui.filePage(path))
     }
 }
 

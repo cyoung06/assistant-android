@@ -1207,7 +1207,7 @@
             "type" : [ "string", "null" ]
           },
           "kind" : {
-            "enum" : [ "task", "project", "event", "mail", "plms_course", "plms_file", "plms_notice", "plms_assignment", "plms_activity", "github_repo", "github_issue", "github_pr", "link" ],
+            "enum" : [ "task", "project", "event", "mail", "plms_course", "plms_file", "plms_notice", "plms_assignment", "plms_activity", "github_repo", "github_issue", "github_pr", "note", "file", "link" ],
             "type" : "string"
           },
           "title" : {
