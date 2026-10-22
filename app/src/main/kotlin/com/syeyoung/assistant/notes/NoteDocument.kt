@@ -6,6 +6,8 @@ import com.syeyoung.assistant.core.TextChange
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.drive.DriveProvider
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * A note as every device has it at once: a Yjs document ([SyncDoc], the shared core's) kept in step
@@ -23,11 +25,29 @@ class NoteDocument(
     private val app = context.applicationContext
     val readOnly = DriveProvider.readOnly(path)
 
-    private val doc = SyncDoc()
+    /** As this device last had it (opened from at once, offline too; see [LiveCache]). */
+    private val cache = LiveCache(app, path)
+    private val doc = cache.load()?.let { runCatching { SyncDoc.fromState(it) }.getOrNull() } ?: SyncDoc()
     private var opened: CompletableDeferred<String>? = null
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+    private var saving: kotlinx.coroutines.Job? = null
+
+    /** Keeps the note on the device a moment after it changes (here or elsewhere). */
+    private fun keepSoon() {
+        saving?.cancel()
+        saving = scope.launch {
+            kotlinx.coroutines.delay(500)
+            val state = doc.state()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { cache.save(state) }
+        }
+    }
 
     private val connection = LiveConnection(app, path, doc::start, ::receive) { state, message ->
-        if (state == "error") opened?.completeExceptionally(IllegalStateException(message))
+        if (state == "error") {
+            opened?.completeExceptionally(IllegalStateException(message))
+            // Moved or deleted: what's kept here is no one's now.
+            cache.forget()
+        }
         // Live once the note is here; until then, it's still opening.
         if (state != "live" || opened?.isCompleted == true) onStatus(state, message)
     }
@@ -35,6 +55,7 @@ class NoteDocument(
     private fun receive(bytes: ByteArray): ByteArray? {
         val got = doc.receive(bytes)
         if (got.changes.isNotEmpty() && opened?.isCompleted == true) onRemote(got.changes)
+        if (got.changes.isNotEmpty()) keepSoon()
         if (opened?.isCompleted == false && LiveConnection.isSyncStep2(bytes)) opened?.complete(doc.text())
         if (opened?.isCompleted == true) onStatus("live", null)
         return got.reply
@@ -49,6 +70,8 @@ class NoteDocument(
             return text
         }
         val first = CompletableDeferred<String>().also { opened = it }
+        // Kept here: shown at once, what's changed since coming in as it does.
+        if (cache.load() != null) first.complete(doc.text())
         connection.connect()
         return first.await()
     }
@@ -57,11 +80,18 @@ class NoteDocument(
     fun edited(from: Int, to: Int, insert: String) {
         if (readOnly) return
         connection.send(doc.edit(from.toUInt(), to.toUInt(), insert))
+        keepSoon()
     }
 
     /** Lets the note go: what's still to be sent goes first (a few seconds at most). */
     suspend fun close() {
+        if (!readOnly) {
+            saving?.cancel()
+            val state = doc.state()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { cache.save(state) }
+        }
         connection.close()
+        scope.cancel()
         doc.close()
     }
 }

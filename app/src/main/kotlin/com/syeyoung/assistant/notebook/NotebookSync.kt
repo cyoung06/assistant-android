@@ -58,8 +58,27 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
 
     private val app = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val doc = NotebookDoc()
+    /** As this device last had it (opened from at once, offline too; see [LiveCache]). */
+    private val cache = com.syeyoung.assistant.notes.LiveCache(app, path)
+    private val doc = cache.load()?.let { runCatching { NotebookDoc.fromState(it) }.getOrNull() } ?: NotebookDoc()
     private var opened: CompletableDeferred<Unit>? = null
+    private var saving: kotlinx.coroutines.Job? = null
+
+    /** A change made here: sent, and kept. */
+    private fun sendKept(message: ByteArray) {
+        connection.send(message)
+        keepSoon()
+    }
+
+    /** Keeps the document on the device a moment after it changes (here or elsewhere). */
+    private fun keepSoon() {
+        saving?.cancel()
+        saving = scope.launch {
+            kotlinx.coroutines.delay(500)
+            val state = doc.state()
+            withContext(Dispatchers.IO) { cache.save(state) }
+        }
+    }
 
     /** The pages as shown, by id (page number = index). */
     private var pageIds: List<String> = emptyList()
@@ -73,22 +92,33 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
     private val incoming = Channel<List<NotebookChange>>(Channel.UNLIMITED)
 
     private val connection = LiveConnection(app, path, doc::start, ::receive) { state, message ->
-        if (state == "error") opened?.completeExceptionally(IllegalStateException(message))
+        if (state == "error") {
+            opened?.completeExceptionally(IllegalStateException(message))
+            // Moved or deleted: what's kept here is no one's now.
+            cache.forget()
+        }
         if (state != "live" || opened?.isCompleted == true) onStatus(state, message)
     }
 
     private fun receive(bytes: ByteArray): ByteArray? {
         val got = doc.receive(bytes)
         if (opened?.isCompleted == true && got.changes.isNotEmpty()) incoming.trySend(got.changes)
+        if (got.changes.isNotEmpty()) keepSoon()
         if (opened?.isCompleted == false && LiveConnection.isSyncStep2(bytes)) opened?.complete(Unit)
         return got.reply
     }
 
-    /** The notebook as the server has it (connected, its base PDF fetched). */
+    /**
+     * The notebook: as kept on this device, at once (connecting meanwhile, and what's changed since
+     * coming in as it does), or, the first time here, as the server has it.
+     */
     suspend fun open(): Opened {
+        val kept = doc.pages().isNotEmpty() && (doc.base().isEmpty() || File(File(app.filesDir, "notebook-blobs"), "${doc.base()}.pdf").exists())
         val first = CompletableDeferred<Unit>().also { opened = it }
+        if (kept) first.complete(Unit)
         connection.connect()
         first.await()
+        keepSoon()
         val pages = doc.pages()
         pageIds = pages.map { it.id }
         val (sources, links) = sourcesOf(pages)
@@ -138,7 +168,7 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
     /** Where each page is drawn from: the base PDF (fetched once, kept by its hash), or a blank page of its style and size. */
     private suspend fun sourcesOf(pages: List<NotebookPage>): Pair<List<PageRenderer.Source>, List<PdfLink>> = withContext(Dispatchers.IO) {
         val hash = doc.base()
-        val base = File(File(app.cacheDir, "notebook-blobs").apply { mkdirs() }, "$hash.pdf")
+        val base = File(File(app.filesDir, "notebook-blobs").apply { mkdirs() }, "$hash.pdf")
         if (hash.isNotEmpty() && !base.exists()) {
             val tmp = File(base.parentFile, "$hash.part")
             tmp.writeBytes(Repo.get(app).api().syncBlob(hash))
@@ -175,7 +205,7 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
     }
 
     // A base PDF's links, kept beside it (found once per PDF: a textbook's take seconds to find).
-    private fun linksFile(hash: String) = File(File(app.cacheDir, "notebook-blobs"), "$hash.links")
+    private fun linksFile(hash: String) = File(File(app.filesDir, "notebook-blobs"), "$hash.links")
 
     private fun readLinks(hash: String): List<PdfLink>? = runCatching {
         val f = linksFile(hash)
@@ -202,7 +232,7 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
         removedStrokes.forEach { s -> docIds[s.id]?.let { edits += NotebookEdit.RemoveStroke(it) } }
         putStrokes.forEach { s -> toDoc(s)?.let { edits += NotebookEdit.PutStroke(it) } }
         removedImages.forEach { i -> docIds[i.id]?.let { edits += NotebookEdit.RemoveImage(it) } }
-        if (edits.isNotEmpty()) connection.send(doc.edit(edits))
+        if (edits.isNotEmpty()) sendKept(doc.edit(edits))
         // Pictures go once the server has their bytes.
         if (putImages.isNotEmpty()) scope.launch {
             val puts = putImages.mapNotNull { img ->
@@ -211,7 +241,7 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
                 blobOf[img.id] = hash
                 toDoc(img, hash)?.let { NotebookEdit.PutImage(it) }
             }
-            if (puts.isNotEmpty()) connection.send(doc.edit(puts))
+            if (puts.isNotEmpty()) sendKept(doc.edit(puts))
         }
     }
 
@@ -219,14 +249,14 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
     suspend fun insertPage(after: Int, ref: Int, style: PageStyle) {
         val size = doc.pages().getOrNull(ref)
         val page = NotebookPage(UUID.randomUUID().toString(), -1, style.name.lowercase().let { if (it == "blank") "plain" else it }, size?.width ?: 595f, size?.height ?: 842f)
-        connection.send(doc.edit(listOf(NotebookEdit.InsertPage((after + 1).coerceAtLeast(0).toUInt(), page))))
+        sendKept(doc.edit(listOf(NotebookEdit.InsertPage((after + 1).coerceAtLeast(0).toUInt(), page))))
         refreshPages()
     }
 
     /** Pages [indices] removed, with what's on them. */
     suspend fun deletePages(indices: Set<Int>) {
         val ids = indices.mapNotNull { pageIds.getOrNull(it) }
-        connection.send(doc.edit(ids.map { NotebookEdit.RemovePage(it) }))
+        sendKept(doc.edit(ids.map { NotebookEdit.RemovePage(it) }))
         refreshPages()
     }
 
@@ -235,10 +265,13 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
         val want = pages.mapNotNull { pageIds.getOrNull(it) }.toSet()
         val have = doc.bookmarks().toSet()
         val edits = (have - want).map { NotebookEdit.Bookmark(it, false) } + (want - have).map { NotebookEdit.Bookmark(it, true) }
-        if (edits.isNotEmpty()) connection.send(doc.edit(edits))
+        if (edits.isNotEmpty()) sendKept(doc.edit(edits))
     }
 
     suspend fun close() {
+        saving?.cancel()
+        val state = doc.state()
+        withContext(Dispatchers.IO) { cache.save(state) }
         connection.close()
         scope.cancel()
         doc.close()
@@ -304,7 +337,7 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
 
     /** A picture's bytes: kept here once fetched (they never change). */
     private suspend fun cachedBlob(hash: String): ByteArray = withContext(Dispatchers.IO) {
-        val f = File(File(app.cacheDir, "notebook-blobs").apply { mkdirs() }, hash)
+        val f = File(File(app.filesDir, "notebook-blobs").apply { mkdirs() }, hash)
         if (f.exists()) return@withContext f.readBytes()
         val bytes = Repo.get(app).api().syncBlob(hash)
         File(f.parentFile, "$hash.part").apply { writeBytes(bytes); renameTo(f) }
