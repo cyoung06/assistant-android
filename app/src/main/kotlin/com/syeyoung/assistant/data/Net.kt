@@ -284,6 +284,12 @@ class Api(endpoint: Endpoint) {
     /** The files opened most recently, latest first. */
     suspend fun driveRecent(limit: Int = 8): List<String> = paths(send { http.get("$base/api/v1/drive/recent?limit=$limit") }.bodyAsText())
 
+    /** Which document [path]'s live state is now (null: none). Throws if the server can't be asked quickly. */
+    suspend fun syncEpoch(path: String): String? = kotlinx.coroutines.withTimeout(3000) {
+        val o = kotlinx.serialization.json.Json.parseToJsonElement(send { http.get("$base/api/v1/sync/epoch?doc=${drivePath(path)}") }.bodyAsText()).jsonObject
+        o["epoch"]?.jsonPrimitive?.content?.takeIf { it != "null" }
+    }
+
     /** Where a PDF was left: its page (from 0) and the tool in hand, if known. */
     suspend fun drivePlace(path: String): Pair<Int?, String?> {
         val o = kotlinx.serialization.json.Json.parseToJsonElement(send { http.get("$base/api/v1/drive/state?path=${drivePath(path)}") }.bodyAsText()).jsonObject

@@ -27,7 +27,8 @@ class NoteDocument(
 
     /** As this device last had it (opened from at once, offline too; see [LiveCache]). */
     private val cache = LiveCache(app, path)
-    private val doc = cache.load()?.let { runCatching { SyncDoc.fromState(it) }.getOrNull() } ?: SyncDoc()
+    /** Replaced (before connecting) if what's kept turns out to be another document's. */
+    private var doc = cache.load()?.let { runCatching { SyncDoc.fromState(it) }.getOrNull() } ?: SyncDoc()
     private var opened: CompletableDeferred<String>? = null
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
     private var saving: kotlinx.coroutines.Job? = null
@@ -42,7 +43,7 @@ class NoteDocument(
         }
     }
 
-    private val connection = LiveConnection(app, path, doc::start, ::receive) { state, message ->
+    private val connection = LiveConnection(app, path, { doc.start() }, ::receive) { state, message ->
         if (state == "error") {
             opened?.completeExceptionally(IllegalStateException(message))
             // Moved or deleted: what's kept here is no one's now.
@@ -56,6 +57,7 @@ class NoteDocument(
         val got = doc.receive(bytes)
         if (got.changes.isNotEmpty() && opened?.isCompleted == true) onRemote(got.changes)
         if (got.changes.isNotEmpty()) keepSoon()
+        if (LiveConnection.isSyncStep2(bytes)) scope.launch { runCatching { Repo.get(app).api().syncEpoch(path) }.getOrNull()?.let { cache.epoch = it } }
         if (opened?.isCompleted == false && LiveConnection.isSyncStep2(bytes)) opened?.complete(doc.text())
         if (opened?.isCompleted == true) onStatus("live", null)
         return got.reply
@@ -68,6 +70,12 @@ class NoteDocument(
             val text = Repo.get(app).api().driveRead(path).bytes.toString(Charsets.UTF_8)
             onStatus("readonly", null)
             return text
+        }
+        // What's kept is used only while it's still this path's document (not one deleted since and made again).
+        if (!cache.stillCurrent()) {
+            cache.forget()
+            doc.close()
+            doc = SyncDoc()
         }
         val first = CompletableDeferred<String>().also { opened = it }
         // Kept here: shown at once, what's changed since coming in as it does.

@@ -60,9 +60,15 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     /** As this device last had it (opened from at once, offline too; see [LiveCache]). */
     private val cache = com.syeyoung.assistant.notes.LiveCache(app, path)
-    private val doc = cache.load()?.let { runCatching { NotebookDoc.fromState(it) }.getOrNull() } ?: NotebookDoc()
+    /** Replaced (before connecting) if what's kept turns out to be another document's. */
+    private var doc = cache.load()?.let { runCatching { NotebookDoc.fromState(it) }.getOrNull() } ?: NotebookDoc()
     private var opened: CompletableDeferred<Unit>? = null
     private var saving: kotlinx.coroutines.Job? = null
+
+    /** Which document what's kept is: noted once the server's is here. */
+    private fun keepEpoch() {
+        scope.launch { runCatching { Repo.get(app).api().syncEpoch(path) }.getOrNull()?.let { cache.epoch = it } }
+    }
 
     /** A change made here: sent, and kept. */
     private fun sendKept(message: ByteArray) {
@@ -91,7 +97,7 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
     /** What came from elsewhere, handled one batch at a time, in order (some need a download first). */
     private val incoming = Channel<List<NotebookChange>>(Channel.UNLIMITED)
 
-    private val connection = LiveConnection(app, path, doc::start, ::receive) { state, message ->
+    private val connection = LiveConnection(app, path, { doc.start() }, ::receive) { state, message ->
         if (state == "error") {
             opened?.completeExceptionally(IllegalStateException(message))
             // Moved or deleted: what's kept here is no one's now.
@@ -104,6 +110,7 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
         val got = doc.receive(bytes)
         if (opened?.isCompleted == true && got.changes.isNotEmpty()) incoming.trySend(got.changes)
         if (got.changes.isNotEmpty()) keepSoon()
+        if (LiveConnection.isSyncStep2(bytes)) keepEpoch()
         if (opened?.isCompleted == false && LiveConnection.isSyncStep2(bytes)) opened?.complete(Unit)
         return got.reply
     }
@@ -113,6 +120,12 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
      * coming in as it does), or, the first time here, as the server has it.
      */
     suspend fun open(): Opened {
+        // What's kept is used only while it's still this path's document (not one deleted since and made again).
+        if (!cache.stillCurrent()) {
+            cache.forget()
+            doc.close()
+            doc = NotebookDoc()
+        }
         val kept = doc.pages().isNotEmpty() && (doc.base().isEmpty() || File(File(app.filesDir, "notebook-blobs"), "${doc.base()}.pdf").exists())
         val first = CompletableDeferred<Unit>().also { opened = it }
         if (kept) first.complete(Unit)
