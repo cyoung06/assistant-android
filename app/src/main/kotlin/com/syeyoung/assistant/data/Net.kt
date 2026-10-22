@@ -284,6 +284,12 @@ class Api(endpoint: Endpoint) {
     /** The files opened most recently, latest first. */
     suspend fun driveRecent(limit: Int = 8): List<String> = paths(send { http.get("$base/api/v1/drive/recent?limit=$limit") }.bodyAsText())
 
+    /** Where a PDF was left: its page (from 0) and the tool in hand, if known. */
+    suspend fun drivePlace(path: String): Pair<Int?, String?> {
+        val o = kotlinx.serialization.json.Json.parseToJsonElement(send { http.get("$base/api/v1/drive/state?path=${drivePath(path)}") }.bodyAsText()).jsonObject
+        return o["page"]?.jsonPrimitive?.content?.toIntOrNull() to o["tool"]?.jsonPrimitive?.content?.takeIf { it != "null" }
+    }
+
     /** Changes what's kept about [path] (what's given is set; the rest stays). */
     suspend fun driveChangeState(path: String, change: JsonObject) = send {
         http.patch("$base/api/v1/drive/state?path=${drivePath(path)}") { contentType(ContentType.Application.Json); setBody(change) }

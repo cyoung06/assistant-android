@@ -86,11 +86,13 @@ class NotebookActivity : ComponentActivity() {
             ?.let { android.provider.DocumentsContract.getDocumentId(it) }
             ?.takeIf { !com.syeyoung.assistant.drive.DriveProvider.readOnly(it) }
         if (uri.authority == com.syeyoung.assistant.drive.DriveProvider.authority(this) && livePath == null) followConflicts(android.provider.DocumentsContract.getDocumentId(uri))
+        // In the drive: where it was left is kept there (any device opens it at that page).
+        placePath = uri.takeIf { it.authority == com.syeyoung.assistant.drive.DriveProvider.authority(this) }?.let { android.provider.DocumentsContract.getDocumentId(it) }
 
         val ink = InProgressStrokesView(this)
         view = NotebookView(this, ink, renderer).apply {
             onInkChanged = { scheduleSave() }
-            onPageChanged = { p, n -> ui.page = p; ui.pages = n }
+            onPageChanged = { p, n -> ui.page = p; ui.pages = n; keepPlace() }
             onUndoChanged = { u, r -> ui.canUndo = u; ui.canRedo = r }
             onSelectionChanged = { img -> ui.imageSelected = hasSelection; ui.groupSelected = selectionIsGroup; if (img == null) ui.cropping = false }
             onSelectionFrame = { r -> ui.selectionFrame = r }
@@ -113,7 +115,7 @@ class NotebookActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-                val changed = { ui.applyTo(view); ui.save(prefs()) }
+                val changed = { ui.applyTo(view); ui.save(prefs()); keepPlace() }
                 // Images dragged in from another app (split screen, pop-up view) land where they're dropped.
                 val dropTarget = remember {
                     object : androidx.compose.ui.draganddrop.DragAndDropTarget {
@@ -237,6 +239,7 @@ class NotebookActivity : ComponentActivity() {
                 view.readOnly = ui.readOnly
                 ui.bookmarks = opened.bookmarks
                 view.setDocument(sizes, opened.strokes, opened.images, opened.links)
+                restorePlace()
                 if (BuildConfig.DEBUG) diagnostics()
                 ui.status = ""
             }.onFailure { e ->
@@ -247,6 +250,43 @@ class NotebookActivity : ComponentActivity() {
     }
 
     /** Opens the drive notebook at [path] live (see [NotebookSync]). */
+    // ---- where it was left: kept in the drive's state of the file, so any device opens it there ----
+
+    private var placePath: String? = null
+    /** Where it was left is being put back: page changes meanwhile aren't the person's. */
+    private var placing = false
+    private var keepingPlace: kotlinx.coroutines.Job? = null
+
+    /** Opens at the page it was left at (on any device), with the tool that was in hand. */
+    private fun restorePlace() {
+        val path = placePath ?: return
+        placing = true
+        lifecycleScope.launch {
+            runCatching { com.syeyoung.assistant.data.Repo.get(this@NotebookActivity).api().drivePlace(path) }.onSuccess { (page, tool) ->
+                page?.let { view.goTo(it, animate = false) }
+                tool?.let { t -> runCatching { Tool.valueOf(t.uppercase()) }.getOrNull()?.takeIf { !ui.readOnly }?.let { ui.tool = it; ui.applyTo(view) } }
+            }
+            placing = false
+            // Opened: for Recent.
+            runCatching { com.syeyoung.assistant.data.Repo.get(this@NotebookActivity).api().driveChangeState(path, kotlinx.serialization.json.buildJsonObject { put("opened", kotlinx.serialization.json.JsonPrimitive(true)) }) }
+        }
+    }
+
+    /** The page (and tool) kept a moment after it changes. */
+    private fun keepPlace() {
+        val path = placePath ?: return
+        if (placing) return
+        keepingPlace?.cancel()
+        keepingPlace = lifecycleScope.launch {
+            kotlinx.coroutines.delay(1500)
+            val change = kotlinx.serialization.json.buildJsonObject {
+                put("page", kotlinx.serialization.json.JsonPrimitive(view.currentPage))
+                put("tool", kotlinx.serialization.json.JsonPrimitive(ui.tool.name.lowercase()))
+            }
+            runCatching { com.syeyoung.assistant.data.Repo.get(this@NotebookActivity).api().driveChangeState(path, change) }
+        }
+    }
+
     private fun openLive(path: String) {
         lifecycleScope.launch {
             ui.status = "Opening…"
@@ -272,6 +312,7 @@ class NotebookActivity : ComponentActivity() {
                 view.readOnly = false
                 ui.bookmarks = o.bookmarks
                 view.setDocument(o.sizes, o.strokes, o.images, o.links)
+                restorePlace()
                 view.onEdit = { rs, ps, ri, pi -> sync.edited(rs, ps, ri, pi) }
                 ui.status = ""
             }.onFailure { e ->
