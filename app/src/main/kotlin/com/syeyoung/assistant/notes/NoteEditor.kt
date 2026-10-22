@@ -20,6 +20,7 @@ import androidx.core.view.ViewCompat
 import com.syeyoung.assistant.core.NoteStyle
 import com.syeyoung.assistant.core.Span
 import com.syeyoung.assistant.core.markdownSpans
+import com.syeyoung.assistant.core.renderMath
 import com.syeyoung.assistant.core.noteStyle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -229,6 +230,45 @@ class NoteEditor(
         if (structure) spans = markdownSpans(text.toString())
         val selection = if (editing && field.hasFocus()) minOf(field.selectionStart, field.selectionEnd)..maxOf(field.selectionStart, field.selectionEnd) else null
         preview.apply(text, spans, selection, source)
+        showMathTip(selection)
+    }
+
+    // ---- the math being written, typeset just below it (or its TeX error) ----
+
+    private val tipView = MathTipView(context)
+    private val tip = android.widget.PopupWindow(tipView, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, false).apply {
+        // Shown; never takes the keyboard or touches from the text.
+        isTouchable = false
+        inputMethodMode = android.widget.PopupWindow.INPUT_METHOD_NOT_NEEDED
+        elevation = 6 * context.resources.displayMetrics.density
+    }
+
+    /** While the cursor is in math (shown as TeX then): it typeset below it, as it's written, or why it doesn't parse. */
+    private fun showMathTip(selection: IntRange?) {
+        val at = selection?.takeIf { it.first == it.last }?.first
+        val span = at?.let { c -> spans.firstOrNull { val e = it.element; e is com.syeyoung.assistant.core.Element.Math && it.range.from.toInt() <= c && c <= it.range.to.toInt() } }
+        val math = span?.element as? com.syeyoung.assistant.core.Element.Math
+        val layout = field.layout
+        if (span == null || math == null || layout == null || !field.isAttachedToWindow) return tip.dismiss()
+        if (math.tex.isBlank()) tipView.show("Type TeX…", error = false)
+        else try {
+            tipView.show(Painted(renderMath(math.tex, math.display, style.fontSize * field.resources.displayMetrics.scaledDensity, style.text)))
+        } catch (e: com.syeyoung.assistant.core.RenderException.Invalid) {
+            tipView.show(e.v1, error = true)
+        } catch (e: com.syeyoung.assistant.core.RenderException) {
+            tipView.show(e.message ?: "Can't draw this", error = true)
+        }
+        // Below the math's last line, at its start.
+        val end = span.range.to.toInt().coerceAtMost(field.text.length)
+        val line = layout.getLineForOffset(end)
+        val x = layout.getPrimaryHorizontal(span.range.from.toInt().coerceAtMost(field.text.length)).toInt() + field.totalPaddingLeft - field.scrollX
+        val y = layout.getLineBottom(line) + field.totalPaddingTop - field.scrollY + (4 * field.resources.displayMetrics.density).toInt()
+        tipView.measure(android.view.View.MeasureSpec.UNSPECIFIED, android.view.View.MeasureSpec.UNSPECIFIED)
+        val width = tipView.measuredWidth
+        val height = tipView.measuredHeight
+        val left = x.coerceIn(0, maxOf(0, field.width - width))
+        if (tip.isShowing) tip.update(field, left, y - field.height, width, height)
+        else tip.showAsDropDown(field, left, y - field.height)
     }
 
     private fun tapped(e: MotionEvent): Boolean {
@@ -422,6 +462,7 @@ class NoteEditor(
 
     /** Lets the note go (what's typed and not yet sent goes first). */
     fun destroy() {
+        tip.dismiss()
         CoroutineScope(Dispatchers.Main).launch {
             document.close()
             scope.cancel()
