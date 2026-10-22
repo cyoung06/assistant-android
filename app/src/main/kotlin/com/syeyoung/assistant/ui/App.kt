@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoveToInbox
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -97,6 +98,8 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
     var screen by remember { mutableStateOf<Screen>(if (phone) Screen.Today else Screen.Active) }
     var detail by remember { mutableStateOf(openTask) }
     var creating by remember { mutableStateOf(false) }
+    /** The palette: go to, make, or find anything. */
+    var palette by remember { mutableStateOf(false) }
     var event by remember { mutableStateOf<EventTarget?>(null) }
     // Bumped when the event editor closes, so the calendar reads its range again.
     var calendarVersion by remember { mutableStateOf(0) }
@@ -147,6 +150,25 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
         return
     }
 
+    if (palette) Palette(
+        listOf(
+            PaletteCommand("Go to Today", "day") { screen = Screen.Today },
+            PaletteCommand("Go to Triage", "inbox") { screen = Screen.Triage },
+            PaletteCommand("Go to Active tasks", "todo") { screen = Screen.Active },
+            PaletteCommand("Go to Backlog") { screen = Screen.Backlog },
+            PaletteCommand("Go to Calendar", "events schedule") { screen = Screen.Calendar },
+            PaletteCommand("Go to Files", "drive") { screen = Screen.Files },
+            PaletteCommand("Go to Notebooks") { screen = Screen.Notebooks },
+            PaletteCommand("New task", "create add todo") { creating = true },
+            PaletteCommand("Quick note", "new note write") { context.startActivity(com.syeyoung.assistant.notes.QuickNoteActivity.intent(context, notebook = false)) },
+            PaletteCommand("Notebook page", "new notebook pen write") { context.startActivity(com.syeyoung.assistant.notes.QuickNoteActivity.intent(context, notebook = true)) },
+            PaletteCommand("Capture", "share screenshot triage") { context.startActivity(android.content.Intent(context, com.syeyoung.assistant.capture.CaptureActivity::class.java)) },
+            PaletteCommand("Settings") { screen = Screen.Settings },
+        ),
+        onTask = { detail = UUID.fromString(it) },
+        onClose = { palette = false },
+    )
+
     val nav: @Composable () -> Unit = {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 12.dp)) {
             Text("Assistant", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.titleLarge)
@@ -193,6 +215,7 @@ fun AssistantApp(openTask: UUID? = null, openMail: String? = null, onMailClosed:
                     navigationIcon = {
                         IconButton({ if (wide) toggleSide() else scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, "Navigation") }
                     },
+                    actions = { IconButton({ palette = true }) { Icon(Icons.Filled.Search, "Go to, make, or find anything") } },
                 )
             },
             floatingActionButton = {

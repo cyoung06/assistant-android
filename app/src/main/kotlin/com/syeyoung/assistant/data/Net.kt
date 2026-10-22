@@ -278,9 +278,9 @@ class Api(endpoint: Endpoint) {
     /** Deletes a drive file or folder: to the trash (kept 30 days, see [driveTrash]). */
     suspend fun driveDelete(path: String) = send { http.delete("$base/api/v1/drive/file?path=${drivePath(path)}") }.let { }
 
-    /** A new note (or notebook page) for the class on now, in its project's Notes; where it is. */
-    suspend fun quickNote(notebook: Boolean): String =
-        AppJson.parseToJsonElement(send { http.post("$base/api/v1/quick-note?kind=${if (notebook) "notebook" else "note"}") }.bodyAsText()).jsonObject["path"]!!.jsonPrimitive.content
+    /** A new note (or notebook page) for the class on now (or in [projectId]), in its project's Notes; where it is. */
+    suspend fun quickNote(notebook: Boolean, projectId: String? = null): String =
+        AppJson.parseToJsonElement(send { http.post("$base/api/v1/quick-note?kind=${if (notebook) "notebook" else "note"}" + (projectId?.let { "&projectId=$it" } ?: "")) }.bodyAsText()).jsonObject["path"]!!.jsonPrimitive.content
 
     // ---- exports: notebooks, PDFs and notes as one PDF, to hand in ----
 

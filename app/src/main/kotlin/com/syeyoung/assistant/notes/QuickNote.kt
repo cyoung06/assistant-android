@@ -23,8 +23,9 @@ class QuickNoteActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val notebook = intent.getBooleanExtra(EXTRA_NOTEBOOK, false)
+        val project = intent.getStringExtra(EXTRA_PROJECT)
         lifecycleScope.launch {
-            runCatching { Repo.get(this@QuickNoteActivity).api().quickNote(notebook) }
+            runCatching { Repo.get(this@QuickNoteActivity).api().quickNote(notebook, project) }
                 .onSuccess { path ->
                     if (notebook) Notebooks.open(this@QuickNoteActivity, DriveProvider.uri(this@QuickNoteActivity, path))
                     else NoteActivity.open(this@QuickNoteActivity, path, writing = true)
@@ -36,9 +37,11 @@ class QuickNoteActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_NOTEBOOK = "notebook"
+        /** In this project's Notes (its id), not the class on now's. */
+        const val EXTRA_PROJECT = "project"
 
-        fun intent(context: Context, notebook: Boolean) =
-            Intent(context, QuickNoteActivity::class.java).putExtra(EXTRA_NOTEBOOK, notebook).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        fun intent(context: Context, notebook: Boolean, projectId: String? = null) =
+            Intent(context, QuickNoteActivity::class.java).putExtra(EXTRA_NOTEBOOK, notebook).putExtra(EXTRA_PROJECT, projectId).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 }
 
