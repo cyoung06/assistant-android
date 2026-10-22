@@ -282,6 +282,22 @@ class Api(endpoint: Endpoint) {
     suspend fun quickNote(notebook: Boolean, projectId: String? = null): String =
         AppJson.parseToJsonElement(send { http.post("$base/api/v1/quick-note?kind=${if (notebook) "notebook" else "note"}" + (projectId?.let { "&projectId=$it" } ?: "")) }.bodyAsText()).jsonObject["path"]!!.jsonPrimitive.content
 
+    /**
+     * What was shared, put in a project (null: No project): [kind] "file" puts the uploads in its
+     * folder; "note" makes a note in its Notes with them beside it. Where it went.
+     */
+    suspend fun shareToProject(kind: String, projectId: String?, title: String, text: String, attachmentIds: List<String>): List<String> {
+        val body = kotlinx.serialization.json.buildJsonObject {
+            put("kind", kotlinx.serialization.json.JsonPrimitive(kind))
+            projectId?.let { put("projectId", kotlinx.serialization.json.JsonPrimitive(it)) }
+            put("title", kotlinx.serialization.json.JsonPrimitive(title))
+            put("text", kotlinx.serialization.json.JsonPrimitive(text))
+            put("attachmentIds", kotlinx.serialization.json.JsonArray(attachmentIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+        }
+        val r = send { http.post("$base/api/v1/drive/share") { contentType(ContentType.Application.Json); setBody(body) } }
+        return AppJson.parseToJsonElement(r.bodyAsText()).jsonObject["paths"]!!.jsonArray.map { it.jsonPrimitive.content }
+    }
+
     // ---- exports: notebooks, PDFs and notes as one PDF, to hand in ----
 
     /** [request]'s files (items: path, pages from 0; cover) as one PDF, into [to]. */

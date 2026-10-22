@@ -108,13 +108,13 @@ class CaptureActivity : ComponentActivity() {
         }
         val images = uris.mapNotNull { uri ->
             runCatching {
-                val type = contentResolver.getType(uri) ?: "image/png"
-                if (!type.startsWith("image/")) return@runCatching null
+                // Any file: a picture shown, the rest by name.
+                val type = contentResolver.getType(uri) ?: "application/octet-stream"
                 val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
                 val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                     if (c.moveToFirst()) c.getString(0) else null
                 } ?: "screenshot.${type.substringAfter('/')}"
-                val preview = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = 4 })?.asImageBitmap()
+                val preview = if (type.startsWith("image/")) BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = 4 })?.asImageBitmap() else null
                 SharedImage(uri, name, type, bytes, preview)
             }.getOrNull()
         }
@@ -128,7 +128,8 @@ private val URL = Regex("""https?://\S+""")
 private fun CaptureScreen(shared: Shared, onDone: () -> Unit) {
     val context = LocalContext.current
     val repo = Repo.get(context)
-    var mode by remember { mutableStateOf(0) }
+    // Files that aren't pictures (a PDF): most likely for a project's folder.
+    var mode by remember { mutableStateOf(if (shared.images.any { !it.mimeType.startsWith("image/") }) 2 else 0) }
 
     LaunchedEffect(Unit) { if (repo.state.value.data.fetchedAt == 0L) repo.refresh() }
 
@@ -138,15 +139,21 @@ private fun CaptureScreen(shared: Shared, onDone: () -> Unit) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(shared.images) { img ->
                     img.preview?.let { Image(it, img.name, Modifier.height(140.dp).width(100.dp), contentScale = ContentScale.Crop) }
+                        ?: Text(img.name, Modifier.width(140.dp).padding(8.dp), style = MaterialTheme.typography.bodySmall, maxLines = 3)
                 }
             }
         }
         if (shared.text.isNotBlank()) Text(shared.text.take(500), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            SegmentedButton(mode == 0, { mode = 0 }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("To Triage") }
-            SegmentedButton(mode == 1, { mode = 1 }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("Quick task") }
+            SegmentedButton(mode == 0, { mode = 0 }, SegmentedButtonDefaults.itemShape(0, 3)) { Text("To Triage") }
+            SegmentedButton(mode == 1, { mode = 1 }, SegmentedButtonDefaults.itemShape(1, 3)) { Text("Quick task") }
+            SegmentedButton(mode == 2, { mode = 2 }, SegmentedButtonDefaults.itemShape(2, 3)) { Text("Project") }
         }
-        if (mode == 0) SendToTriage(shared, onDone) else QuickTask(shared, onDone)
+        when (mode) {
+            0 -> SendToTriage(shared, onDone)
+            1 -> QuickTask(shared, onDone)
+            else -> IntoProject(shared, onDone)
+        }
     }
 }
 
@@ -202,6 +209,63 @@ private fun QuickTask(shared: Shared, onDone: () -> Unit) {
 }
 
 /**
+ * What was shared, into a project: the files into its folder, or (with text, or asked) a note in its
+ * Notes with them beside it.
+ */
+@Composable
+private fun IntoProject(shared: Shared, onDone: () -> Unit) {
+    val context = LocalContext.current
+    val repo = Repo.get(context)
+    val state by repo.state.collectAsStateCompat()
+    val scope = rememberCoroutineScope()
+    var projectId by remember { mutableStateOf<UUID?>(null) }
+    var projectMenu by remember { mutableStateOf(false) }
+    var asNote by remember { mutableStateOf(shared.images.isEmpty()) }
+    var title by remember { mutableStateOf(shared.subject ?: shared.text.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(80)) }
+    var text by remember { mutableStateOf(shared.text) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Box {
+        val project = state.data.projects.find { it.id == projectId }
+        AssistChip({ projectMenu = true }, { Text(project?.name ?: "No project") }, leadingIcon = project?.let { { Dot(it.color) } })
+        ProjectMenu(projectMenu, state.data.projects, { projectMenu = false }) { projectId = it }
+    }
+    if (shared.images.isNotEmpty()) SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        SegmentedButton(!asNote, { asNote = false }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("Files") }
+        SegmentedButton(asNote, { asNote = true }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("Note") }
+    }
+    if (asNote) {
+        OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("Title") }, singleLine = true)
+        OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), label = { Text("Text (optional)") }, minLines = 2)
+    }
+    Text(
+        if (asNote) "A note in the project's Notes" + if (shared.images.isEmpty()) "" else ", with the ${shared.images.size} file(s) beside it"
+        else "${shared.images.size} file(s) into the project's folder",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    Button(
+        onClick = {
+            busy = true
+            error = null
+            scope.launch {
+                runCatching {
+                    val api = repo.api()
+                    val ids = shared.images.map { api.upload(it.bytes, it.name, it.mimeType).id.toString() }
+                    api.shareToProject(if (asNote) "note" else "file", projectId?.toString(), title, if (asNote) text else "", ids)
+                }.onSuccess {
+                    Toast.makeText(context, "Saved", Toast.LENGTH_SHORT).show()
+                    onDone()
+                }.onFailure { error = it.message; busy = false }
+            }
+        },
+        enabled = !busy && (shared.images.isNotEmpty() || title.isNotBlank() || text.isNotBlank()),
+        modifier = Modifier.fillMaxWidth(),
+    ) { Text(if (busy) "Saving…" else "Save") }
+}
+
+/**
  * Sends what was shared to Triage and closes: the model reads it in the background and its
  * suggestions wait in Triage to be accepted.
  */
@@ -223,7 +287,8 @@ private fun SendToTriage(shared: Shared, onDone: () -> Unit) {
             scope.launch {
                 runCatching {
                     val api = repo.api()
-                    val ids = shared.images.map { api.upload(it.bytes, it.name, it.mimeType).id }
+                    // The model reads pictures (other files go into a project instead).
+                    val ids = shared.images.filter { it.mimeType.startsWith("image/") }.map { api.upload(it.bytes, it.name, it.mimeType).id }
                     val text = listOf(shared.subject.orEmpty(), shared.text, note).filter { it.isNotBlank() }.joinToString("\n\n")
                     api.triage.submitTriage(SubmitRequest(source = "share", text = text, attachmentIds = ids, title = shared.subject.orEmpty())).value()
                 }.onSuccess {
