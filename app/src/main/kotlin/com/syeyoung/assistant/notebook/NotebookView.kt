@@ -45,6 +45,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     // ---- what the host sets and hears ----
     var tool = Tool.PEN
+        set(value) {
+            // Another tool picked: the fading pen's writing goes now.
+            if (field == Tool.FADING && value != Tool.FADING && fading.isNotEmpty() && fadeOut == null) { removeCallbacks(fadeLater); fadeLater.run() }
+            field = value
+        }
     /** Only for reading (a course file kept as PLMS has it): the pen moves the page like a finger. */
     var readOnly = false
     var penColor = PEN_COLORS[0]
@@ -1404,5 +1409,5 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 }
 
 /** The fading pen: how long after the last stroke its writing starts to fade, and how long fading takes. */
-private const val FADE_AFTER_MS = 5_000L
+private const val FADE_AFTER_MS = 4_000L
 private const val FADE_MS = 600L

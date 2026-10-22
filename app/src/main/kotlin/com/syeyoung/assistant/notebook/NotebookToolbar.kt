@@ -201,7 +201,7 @@ private fun SizePanel(ui: ToolbarState, t: Tool, onChange: () -> Unit) {
     fun fromSlider(s: Float) = range.start * (range.endInclusive / range.start).pow(s)
     Column(Modifier.width(260.dp).padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(when (t) { Tool.PEN -> "Pen"; Tool.FADING -> "Fading pen (gone 5 s after you stop)"; Tool.HIGHLIGHTER -> "Highlighter"; Tool.ERASER, Tool.SELECT -> "Eraser" }, Modifier.weight(1f), fontSize = 14.sp)
+            Text(when (t) { Tool.PEN -> "Pen"; Tool.FADING -> "Fading pen (gone 4 s after you stop)"; Tool.HIGHLIGHTER -> "Highlighter"; Tool.ERASER, Tool.SELECT -> "Eraser" }, Modifier.weight(1f), fontSize = 14.sp)
             Text(if (t == Tool.ERASER) "${value.roundToInt()} dp" else String.format(Locale.US, "%.2f pt", value), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         // Roughly how it looks on the page at normal zoom, on white like the page.
