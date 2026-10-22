@@ -383,6 +383,11 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 strokeRenderer.draw(canvas, s.stroke, drawMatrix)
                 if (moving) canvas.restore()
             }
+            if (fading.any { it.page == i }) {
+                canvas.saveLayerAlpha(null, (fadingAlpha * 255).toInt())
+                for (s in fading) if (s.page == i) strokeRenderer.draw(canvas, s.stroke, drawMatrix)
+                canvas.restore()
+            }
             canvas.restore()
             g?.let { grp -> groupOnScreen(grp)?.let { r -> canvas.drawRect(r, lassoPaint); for (h in handles(r).take(4)) { canvas.drawCircle(h.x, h.y, handleR, handlePaint); canvas.drawCircle(h.x, h.y, handleR, handleRing) } } }
             selectedImage?.takeIf { it.page == i }?.let { drawSelection(canvas, it) }
@@ -541,10 +546,44 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private val strokePages = HashMap<InProgressStrokeId, Pair<Int, Tool>>()
     private val erasedNow = mutableListOf<InkStroke>()
 
+    // ---- the fading pen: writing that goes a few seconds after the last stroke, never kept ----
+
+    /** What's written with the fading pen, until it fades. */
+    private val fading = mutableListOf<InkStroke>()
+    /** How much of it shows (1, then down to 0 as it fades). */
+    private var fadingAlpha = 1f
+    private var fadeOut: ValueAnimator? = null
+    private val fadeLater = Runnable {
+        fadeOut = ValueAnimator.ofFloat(1f, 0f).setDuration(FADE_MS).apply {
+            addUpdateListener { fadingAlpha = it.animatedValue as Float; invalidate() }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (fadeOut !== animation) return
+                    fading.clear(); fadingAlpha = 1f; fadeOut = null; invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    /** Writing again with the fading pen: what's there stays (shown again if it was fading), the wait starts over. */
+    private fun keepFading() {
+        removeCallbacks(fadeLater)
+        fadeOut?.let { fadeOut = null; it.cancel() }
+        if (fadingAlpha != 1f) { fadingAlpha = 1f; invalidate() }
+    }
+
     init {
         ink.addFinishedStrokesListener(object : InProgressStrokesFinishedListener {
             override fun onStrokesFinished(strokes: Map<InProgressStrokeId, Stroke>) {
-                val added = strokes.mapNotNull { (id, s) -> strokePages.remove(id)?.let { (page, tool) -> InkStroke(InkIds.next(), page, tool, s) } }
+                val finished = strokes.mapNotNull { (id, s) -> strokePages.remove(id)?.let { (page, tool) -> InkStroke(InkIds.next(), page, tool, s) } }
+                // The fading pen's: shown until they fade, not the notebook's.
+                val (faded, added) = finished.partition { it.tool == Tool.FADING }
+                if (faded.isNotEmpty()) {
+                    fading += faded
+                    keepFading()
+                    postDelayed(fadeLater, FADE_AFTER_MS)
+                }
                 if (added.isNotEmpty()) {
                     this@NotebookView.strokes += added
                     record(InkChange.Added(added))
@@ -1069,7 +1108,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 val toPage = Matrix().also { pageMatrix(page).invert(it) }
                 val brush = if (tool == Tool.HIGHLIGHTER) brushFor(Tool.HIGHLIGHTER, highlighterColor, highlighterSize) else brushFor(Tool.PEN, penColor, penSize)
                 val id = ink.startStroke(e, penPointer, brush, toPage)
-                strokePages[id] = page to (if (tool == Tool.HIGHLIGHTER) Tool.HIGHLIGHTER else Tool.PEN)
+                strokePages[id] = page to (if (tool == Tool.HIGHLIGHTER || tool == Tool.FADING) tool else Tool.PEN)
+                if (tool == Tool.FADING) keepFading()
                 strokeId = id
             }
             MotionEvent.ACTION_MOVE -> strokeId?.let { id -> if (e.findPointerIndex(penPointer) >= 0) ink.addToStroke(e, penPointer, id) }
@@ -1351,3 +1391,7 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
 
     private fun notifyUndo() = onUndoChanged(undo.isNotEmpty(), redo.isNotEmpty())
 }
+
+/** The fading pen: how long after the last stroke its writing starts to fade, and how long fading takes. */
+private const val FADE_AFTER_MS = 5_000L
+private const val FADE_MS = 600L

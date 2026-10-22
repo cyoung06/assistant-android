@@ -6,10 +6,11 @@ import androidx.ink.brush.StockBrushes
 import androidx.ink.strokes.Stroke
 
 /** What the pen does; SELECT picks images to move, resize, copy or delete. */
-enum class Tool { PEN, HIGHLIGHTER, ERASER, SELECT }
+/** [FADING]: a pen whose writing fades a few seconds after the last stroke (to point things out); never kept. */
+enum class Tool { PEN, HIGHLIGHTER, FADING, ERASER, SELECT }
 
 /** Sizes: pen and highlighter widths in points (1/72 inch), the pen down to a hairline for small math; the eraser's reach in dp on screen. */
-val SIZE_RANGES = mapOf(Tool.PEN to 0.15f..4f, Tool.HIGHLIGHTER to 3f..24f, Tool.ERASER to 4f..48f, Tool.SELECT to 1f..1f)
+val SIZE_RANGES = mapOf(Tool.PEN to 0.15f..4f, Tool.HIGHLIGHTER to 3f..24f, Tool.FADING to 0.15f..4f, Tool.ERASER to 4f..48f, Tool.SELECT to 1f..1f)
 val PEN_COLORS = listOf(0xFF1B1B1F.toInt(), 0xFF1E5BD8.toInt(), 0xFFD93025.toInt(), 0xFF188038.toInt())
 val HIGHLIGHTER_COLORS = listOf(0x66FFD600, 0x6634C759, 0x66FF7EB6, 0x6640A9FF)
 

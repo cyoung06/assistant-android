@@ -196,12 +196,12 @@ private fun colorFor(ui: ToolbarState, t: Tool) = Color(if (t == Tool.HIGHLIGHTE
 @Composable
 private fun SizePanel(ui: ToolbarState, t: Tool, onChange: () -> Unit) {
     val range = SIZE_RANGES.getValue(t)
-    val value = when (t) { Tool.PEN -> ui.penWidth; Tool.HIGHLIGHTER -> ui.highlighterWidth; Tool.ERASER, Tool.SELECT -> ui.eraserRadius }
+    val value = when (t) { Tool.PEN, Tool.FADING -> ui.penWidth; Tool.HIGHLIGHTER -> ui.highlighterWidth; Tool.ERASER, Tool.SELECT -> ui.eraserRadius }
     fun toSlider(v: Float) = (ln(v / range.start) / ln(range.endInclusive / range.start)).coerceIn(0f, 1f)
     fun fromSlider(s: Float) = range.start * (range.endInclusive / range.start).pow(s)
     Column(Modifier.width(260.dp).padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(when (t) { Tool.PEN -> "Pen"; Tool.HIGHLIGHTER -> "Highlighter"; Tool.ERASER, Tool.SELECT -> "Eraser" }, Modifier.weight(1f), fontSize = 14.sp)
+            Text(when (t) { Tool.PEN -> "Pen"; Tool.FADING -> "Fading pen (gone 5 s after you stop)"; Tool.HIGHLIGHTER -> "Highlighter"; Tool.ERASER, Tool.SELECT -> "Eraser" }, Modifier.weight(1f), fontSize = 14.sp)
             Text(if (t == Tool.ERASER) "${value.roundToInt()} dp" else String.format(Locale.US, "%.2f pt", value), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         // Roughly how it looks on the page at normal zoom, on white like the page.
@@ -216,7 +216,7 @@ private fun SizePanel(ui: ToolbarState, t: Tool, onChange: () -> Unit) {
         }
         Slider(toSlider(value), { s ->
             val v = fromSlider(s)
-            when (t) { Tool.PEN -> ui.penWidth = v; Tool.HIGHLIGHTER -> ui.highlighterWidth = v; Tool.ERASER, Tool.SELECT -> ui.eraserRadius = v }
+            when (t) { Tool.PEN, Tool.FADING -> ui.penWidth = v; Tool.HIGHLIGHTER -> ui.highlighterWidth = v; Tool.ERASER, Tool.SELECT -> ui.eraserRadius = v }
             onChange()
         })
     }
@@ -234,6 +234,13 @@ private fun ToolGlyph(t: Tool, color: Color) {
                 drawCircle(color, w * 0.12f, Offset(w * 0.2f, w * 0.8f))
             }
             Tool.HIGHLIGHTER -> drawLine(color, Offset(w * 0.2f, w * 0.8f), Offset(w * 0.8f, w * 0.2f), strokeWidth = w * 0.32f, cap = StrokeCap.Square)
+            Tool.FADING -> {
+                // A nib, its line trailing off into dots.
+                drawLine(outline, Offset(w * 0.45f, w * 0.55f), Offset(w * 0.85f, w * 0.15f), strokeWidth = w * 0.12f, cap = StrokeCap.Round)
+                drawCircle(color, w * 0.1f, Offset(w * 0.45f, w * 0.55f))
+                drawCircle(color.copy(alpha = 0.6f), w * 0.07f, Offset(w * 0.3f, w * 0.7f))
+                drawCircle(color.copy(alpha = 0.3f), w * 0.05f, Offset(w * 0.17f, w * 0.83f))
+            }
             Tool.SELECT -> {
                 // An arrow pointer.
                 val p = androidx.compose.ui.graphics.Path().apply {
