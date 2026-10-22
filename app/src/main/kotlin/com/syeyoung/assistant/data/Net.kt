@@ -276,6 +276,21 @@ class Api(endpoint: Endpoint) {
     /** Deletes a drive file or folder: to the trash (kept 30 days, see [driveTrash]). */
     suspend fun driveDelete(path: String) = send { http.delete("$base/api/v1/drive/file?path=${drivePath(path)}") }.let { }
 
+    // ---- what's kept about files: starred, recently opened, where a PDF was left ----
+
+    /** The starred files' and folders' paths (a folder's ends with "/"). */
+    suspend fun driveStarred(): List<String> = paths(send { http.get("$base/api/v1/drive/starred") }.bodyAsText())
+
+    /** The files opened most recently, latest first. */
+    suspend fun driveRecent(limit: Int = 8): List<String> = paths(send { http.get("$base/api/v1/drive/recent?limit=$limit") }.bodyAsText())
+
+    /** Changes what's kept about [path] (what's given is set; the rest stays). */
+    suspend fun driveChangeState(path: String, change: JsonObject) = send {
+        http.patch("$base/api/v1/drive/state?path=${drivePath(path)}") { contentType(ContentType.Application.Json); setBody(change) }
+    }.let { }
+
+    private fun paths(json: String) = kotlinx.serialization.json.Json.parseToJsonElement(json).jsonArray.map { it.jsonObject["path"]!!.jsonPrimitive.content }
+
     /** What's in the drive's trash, latest first. */
     suspend fun driveTrash(): List<Trashed> =
         kotlinx.serialization.json.Json.parseToJsonElement(send { http.get("$base/api/v1/drive/trash") }.bodyAsText()).jsonArray.map { e ->

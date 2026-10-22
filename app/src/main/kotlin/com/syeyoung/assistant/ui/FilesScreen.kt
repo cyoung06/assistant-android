@@ -54,6 +54,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
@@ -115,6 +117,9 @@ private const val PROJECTS = "Projects/"
 
 /** Where each storage was left (its open folder), and which storage Files had open: kept while the app runs, so switching away and back doesn't start over. */
 internal object FilesNav {
+    /** Starred files and folders, and the files opened lately (latest first): as the server has them. */
+    val starred = androidx.compose.runtime.mutableStateListOf<String>()
+    val recent = androidx.compose.runtime.mutableStateListOf<String>()
     /** Back to the overview of every storage (from inside one). */
     fun showAll() { open.clear() }
     /** The trash, showing (see [TrashScreen]). */
@@ -170,6 +175,7 @@ fun FilesScreen(pane: Int = 0) {
     LaunchedEffect(Unit) {
         runCatching { repo.api().driveFolder(PROJECTS).propertyEntries.filter { it.folder } }.onSuccess { folders = it }.onFailure { error = it.message }
     }
+    LaunchedEffect(FilesNav.changes) { loadQuick(repo) }
     open?.let { (path, name) ->
         BackHandler { show(null) }
         DriveBrowser(path, name, onExit = { show(null) }, pane = pane)
@@ -186,6 +192,19 @@ fun FilesScreen(pane: Int = 0) {
         error?.let { Text("Couldn't reach the drive: $it", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
         if (list == null && error == null) Text("Loading…", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Starred, then opened lately: a tap away, above every storage.
+            val quick = listOf("Starred" to FilesNav.starred.toList(), "Recent" to FilesNav.recent.filter { !it.endsWith("/") })
+            for ((title, paths) in quick) if (paths.isNotEmpty()) {
+                item(key = "h:$title", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    Text(title.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                items(paths, key = { "$title:$it" }, span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { p ->
+                    QuickRow(p) { openFrom(p, pane) { v -> show(v) } }
+                }
+            }
+            if (list != null && quick.any { it.second.isNotEmpty() }) item(key = "h:all", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                Text("ALL STORAGE", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             items(list.orEmpty(), key = { it.path }) { f ->
                 // Matched to the project by name (folders are named after their projects, made file-safe).
                 val color = colors[f.name] ?: state.data.projects.firstOrNull { it.name.replace(":", " ").replace(Regex("\\s+"), " ").trim() == f.name }?.color
@@ -199,6 +218,41 @@ fun FilesScreen(pane: Int = 0) {
             }
         }
     }
+}
+
+/** Starred and recent, as the server has them now. */
+private suspend fun loadQuick(repo: Repo) {
+    runCatching { repo.api().driveStarred() }.onSuccess { FilesNav.starred.clear(); FilesNav.starred.addAll(it) }
+    runCatching { repo.api().driveRecent(8) }.onSuccess { FilesNav.recent.clear(); FilesNav.recent.addAll(it) }
+}
+
+/** One starred or recent file or folder: its name, and where it is. */
+@Composable
+private fun QuickRow(path: String, onClick: () -> Unit) {
+    val folder = path.endsWith("/")
+    val name = path.trimEnd('/').substringAfterLast('/')
+    val where = parentOf(path).removePrefix("$PROJECTS").trimEnd('/')
+    Row(Modifier.fillMaxWidth().clip12().clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(if (folder) Icons.Filled.Folder else Icons.Filled.Description, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(name, Modifier.padding(start = 12.dp).weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (where.isNotEmpty()) Text(where, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Opens [path] (starred or recent) in its storage: the folder it's in, the file shown. */
+private fun openFrom(path: String, pane: Int, show: (Pair<String, String>?) -> Unit) {
+    val parts = path.removePrefix(PROJECTS).split('/')
+    if (parts.isEmpty() || parts[0].isEmpty()) return
+    val root = "$PROJECTS${parts[0]}/"
+    val navKey = "$pane|$root"
+    if (path.endsWith("/")) {
+        FilesNav.folders[navKey] = path
+        FilesNav.previews.remove(navKey)
+    } else {
+        FilesNav.folders[navKey] = parentOf(path)
+        FilesNav.previews[navKey] = DriveEntry(folder = false, name = path.substringAfterLast('/'), path = path, propertySize = 0)
+    }
+    show(root to parts[0])
 }
 
 /** A project's own storage (its folder in the drive), as on its page's Files tab. */
@@ -261,7 +315,11 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
         runCatching { repo.api().driveFolder(parentOf(s.path)).propertyEntries.find { it.path == s.path } }
             .onSuccess { fresh -> if (fresh != null && selected?.path == fresh.path) selected = fresh }
     }
-    LaunchedEffect(selected) { if (selected == null) FilesNav.previews.remove(navKey) else FilesNav.previews[navKey] = selected!! }
+    LaunchedEffect(selected) {
+        if (selected == null) FilesNav.previews.remove(navKey) else FilesNav.previews[navKey] = selected!!
+        // A file shown is a file opened (for Recent).
+        selected?.let { s -> runCatching { repo.api().driveChangeState(s.path, kotlinx.serialization.json.buildJsonObject { put("opened", kotlinx.serialization.json.JsonPrimitive(true)) }) } }
+    }
     // The tree shows where we are.
     LaunchedEffect(path) {
         var at = path
@@ -520,6 +578,11 @@ class EntryActions(
 
     fun duplicate(e: DriveEntry) = run("Copying…") { repo.api().driveCopy(e.path, e.path) }
 
+    fun star(e: DriveEntry, on: Boolean) = run(null) {
+        repo.api().driveChangeState(e.path, kotlinx.serialization.json.buildJsonObject { put("starred", kotlinx.serialization.json.JsonPrimitive(on)) })
+        loadQuick(repo)
+    }
+
     fun rename(e: DriveEntry, name: String) = run(null) { repo.api().driveMove(e.path, parentOf(e.path) + name + if (e.folder) "/" else "") }
 
     /** To the trash (kept 30 days; put back from Trash): no asking first. */
@@ -599,6 +662,8 @@ private fun EntryMenu(e: DriveEntry, actions: EntryActions, where: String) {
             Item("Share", Icons.Filled.Share) { actions.share(e) }
         }
         androidx.compose.material3.HorizontalDivider()
+        val isStarred = e.path in FilesNav.starred
+        Item(if (isStarred) "Unstar" else "Star", if (isStarred) Icons.Filled.Star else Icons.Filled.StarBorder) { actions.star(e, !isStarred) }
         Item("Copy", Icons.Filled.ContentCopy) { actions.copy(e) }
         if (changeable) Item("Cut", Icons.Filled.ContentCut) { actions.cut(e) }
         FilesNav.clip?.let { c -> if (e.folder && !readOnly) Item("Paste “${c.entry.name}” here", Icons.Filled.ContentPaste) { actions.paste(e.path) } }
