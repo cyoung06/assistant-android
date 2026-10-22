@@ -543,6 +543,8 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
     private var lastPenTime = 0L
     private var penPointer = -1
     private var strokeId: InProgressStrokeId? = null
+    /** The fading pen's white core, written alongside its line (not kept: the line's finished stroke gets one). */
+    private var coreId: InProgressStrokeId? = null
     private val strokePages = HashMap<InProgressStrokeId, Pair<Int, Tool>>()
     private val erasedNow = mutableListOf<InkStroke>()
 
@@ -679,8 +681,9 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
         }
         // Pressing the S Pen's button mid-stroke ends the stroke and erases from there.
         if (gesture == Gesture.PEN && e.actionMasked == MotionEvent.ACTION_MOVE && (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) {
-            strokeId?.let { id -> if (e.findPointerIndex(penPointer) >= 0) ink.finishStroke(e, penPointer, id) }
+            if (e.findPointerIndex(penPointer) >= 0) listOfNotNull(strokeId, coreId).forEach { ink.finishStroke(e, penPointer, it) }
             strokeId = null
+            coreId = null
             gesture = Gesture.ERASE
             erasedNow.clear()
         }
@@ -1114,12 +1117,15 @@ class NotebookView(context: Context, private val ink: InProgressStrokesView, pri
                 }
                 val id = ink.startStroke(e, penPointer, brush, toPage)
                 strokePages[id] = page to (if (tool == Tool.HIGHLIGHTER || tool == Tool.FADING) tool else Tool.PEN)
-                if (tool == Tool.FADING) keepFading()
+                if (tool == Tool.FADING) {
+                    keepFading()
+                    coreId = ink.startStroke(e, penPointer, laserCore(), toPage)
+                }
                 strokeId = id
             }
-            MotionEvent.ACTION_MOVE -> strokeId?.let { id -> if (e.findPointerIndex(penPointer) >= 0) ink.addToStroke(e, penPointer, id) }
-            MotionEvent.ACTION_UP -> strokeId?.let { id -> ink.finishStroke(e, penPointer, id) }.also { strokeId = null }
-            MotionEvent.ACTION_CANCEL -> strokeId?.let { id -> ink.cancelStroke(id, e); strokePages.remove(id) }.also { strokeId = null }
+            MotionEvent.ACTION_MOVE -> if (e.findPointerIndex(penPointer) >= 0) listOfNotNull(strokeId, coreId).forEach { ink.addToStroke(e, penPointer, it) }
+            MotionEvent.ACTION_UP -> { listOfNotNull(strokeId, coreId).forEach { ink.finishStroke(e, penPointer, it) }; strokeId = null; coreId = null }
+            MotionEvent.ACTION_CANCEL -> { listOfNotNull(strokeId, coreId).forEach { ink.cancelStroke(it, e); strokePages.remove(it) }; strokeId = null; coreId = null }
         }
     }
 
