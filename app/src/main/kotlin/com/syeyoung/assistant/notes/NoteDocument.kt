@@ -67,7 +67,8 @@ class NoteDocument(
     suspend fun open(): String {
         onStatus("loading", null)
         if (readOnly) {
-            val text = Repo.get(app).api().driveRead(path).bytes.toString(Charsets.UTF_8)
+            // The copy kept here (refreshed if the drive's changed): offline too.
+            val text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.syeyoung.assistant.drive.LocalCopies.fetch(app, path).file.readText() }
             onStatus("readonly", null)
             return text
         }
@@ -77,11 +78,35 @@ class NoteDocument(
             doc.close()
             doc = SyncDoc()
         }
+        LiveCache.inUse += path
+        onScreen = true
         val first = CompletableDeferred<String>().also { opened = it }
         // Kept here: shown at once, what's changed since coming in as it does.
         if (cache.load() != null) first.complete(doc.text())
         connection.connect()
         return first.await()
+    }
+
+    /** Whether it's open on a screen (not just being brought up to date). */
+    private var onScreen = false
+
+    /**
+     * Brings what's kept of the note up to the server's (to be read and written offline later), then
+     * lets it go. Not for a note open on a screen. Fails if the server can't be reached in [timeout] ms.
+     */
+    suspend fun keepUpToDate(timeout: Long = 60_000) {
+        try {
+            if (!cache.stillCurrent()) {
+                cache.forget()
+                doc.close()
+                doc = SyncDoc()
+            }
+            val synced = CompletableDeferred<String>().also { opened = it }
+            connection.connect()
+            kotlinx.coroutines.withTimeout(timeout) { synced.await() }
+        } finally {
+            close()
+        }
     }
 
     /** Typed here: [to] - [from] UTF-16 units from [from] replaced by [insert]. On the main thread, as the editor changes. */
@@ -101,5 +126,6 @@ class NoteDocument(
         connection.close()
         scope.cancel()
         doc.close()
+        if (onScreen) LiveCache.inUse -= path
     }
 }

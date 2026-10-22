@@ -28,5 +28,6 @@ class AssistantApplication : Application() {
             scope.launch { runCatching { Crashes.upload(this@AssistantApplication, Repo.get(this@AssistantApplication).api()) } }
         }
         SyncWorker.start(this)
+        com.syeyoung.assistant.drive.OfflineFolders.start(this)
     }
 }

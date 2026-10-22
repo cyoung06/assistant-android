@@ -54,6 +54,14 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
         fun links(links: List<PdfLink>)
     }
 
+    /** For a notebook no screen shows (only kept up to date). */
+    object Unseen : Listener {
+        override fun pages(sources: List<PageRenderer.Source>, sizes: List<SizeF>, links: List<PdfLink>, moved: (Int) -> Int?) {}
+        override fun remote(removedStrokes: Set<Long>, putStrokes: List<InkStroke>, removedImages: Set<Long>, putImages: List<NoteImage>) {}
+        override fun bookmarks(pages: Set<Int>) {}
+        override fun links(links: List<PdfLink>) {}
+    }
+
     class Opened(val sources: List<PageRenderer.Source>, val sizes: List<SizeF>, val links: List<PdfLink>, val strokes: List<InkStroke>, val images: List<NoteImage>, val bookmarks: Set<Int>)
 
     private val app = context.applicationContext
@@ -127,6 +135,8 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
             doc = NotebookDoc()
         }
         val kept = doc.pages().isNotEmpty() && (doc.base().isEmpty() || File(File(app.filesDir, "notebook-blobs"), "${doc.base()}.pdf").exists())
+        com.syeyoung.assistant.notes.LiveCache.inUse += path
+        onScreen = true
         val first = CompletableDeferred<Unit>().also { opened = it }
         if (kept) first.complete(Unit)
         connection.connect()
@@ -178,15 +188,49 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
         listener.pages(sources, pages.map { SizeF(it.width, it.height) }, links) { old -> before.getOrNull(old)?.let { id -> now.indexOf(id).takeIf { it >= 0 } } }
     }
 
-    /** Where each page is drawn from: the base PDF (fetched once, kept by its hash), or a blank page of its style and size. */
-    private suspend fun sourcesOf(pages: List<NotebookPage>): Pair<List<PageRenderer.Source>, List<PdfLink>> = withContext(Dispatchers.IO) {
-        val hash = doc.base()
+    /** Whether it's open on a screen (not just being brought up to date). */
+    private var onScreen = false
+
+    /**
+     * Brings what's kept of the notebook up to the server's, with its base PDF and that PDF's links
+     * (to be opened, offline too, at once later), then lets it go. Not for a notebook open on a
+     * screen. Fails if the server can't be reached in [timeout] ms.
+     */
+    suspend fun keepUpToDate(timeout: Long = 120_000) {
+        try {
+            if (!cache.stillCurrent()) {
+                cache.forget()
+                doc.close()
+                doc = NotebookDoc()
+            }
+            val synced = CompletableDeferred<Unit>().also { opened = it }
+            connection.connect()
+            kotlinx.coroutines.withTimeout(timeout) { synced.await() }
+            val hash = doc.base()
+            if (hash.isNotEmpty()) withContext(Dispatchers.IO) {
+                val base = baseFile(hash)
+                if (readLinks(hash) == null) writeLinks(hash, runCatching { NotebookFile.linksIn(app, base) }.getOrDefault(emptyList()))
+            }
+        } finally {
+            close()
+        }
+    }
+
+    /** The base PDF with this hash: downloaded the first time, kept here after. */
+    private suspend fun baseFile(hash: String): File {
         val base = File(File(app.filesDir, "notebook-blobs").apply { mkdirs() }, "$hash.pdf")
-        if (hash.isNotEmpty() && !base.exists()) {
+        if (!base.exists()) {
             val tmp = File(base.parentFile, "$hash.part")
             tmp.writeBytes(Repo.get(app).api().syncBlob(hash))
             tmp.renameTo(base)
         }
+        return base
+    }
+
+    /** Where each page is drawn from: the base PDF (fetched once, kept by its hash), or a blank page of its style and size. */
+    private suspend fun sourcesOf(pages: List<NotebookPage>): Pair<List<PageRenderer.Source>, List<PdfLink>> = withContext(Dispatchers.IO) {
+        val hash = doc.base()
+        val base = if (hash.isNotEmpty()) baseFile(hash) else File(File(app.filesDir, "notebook-blobs"), ".pdf")
         val blanks = File(app.cacheDir, "notebook-blank").apply { mkdirs() }
         val sources = pages.map { p ->
             if (p.base >= 0) PageRenderer.Source(base, p.base)
@@ -288,6 +332,7 @@ class NotebookSync(context: Context, val path: String, onStatus: (state: String,
         connection.close()
         scope.cancel()
         doc.close()
+        if (onScreen) com.syeyoung.assistant.notes.LiveCache.inUse -= path
     }
 
     // ---- the view's strokes and pictures, and the document's ----

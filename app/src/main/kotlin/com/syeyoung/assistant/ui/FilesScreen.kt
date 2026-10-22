@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Upload
@@ -103,6 +104,7 @@ import androidx.compose.ui.unit.sp
 import com.syeyoung.assistant.api.models.DriveEntry
 import com.syeyoung.assistant.data.Repo
 import com.syeyoung.assistant.drive.DriveProvider
+import com.syeyoung.assistant.drive.LocalCopies
 import com.syeyoung.assistant.notebook.Notebooks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -173,7 +175,7 @@ fun FilesScreen(pane: Int = 0) {
     var folders by remember { mutableStateOf<List<DriveEntry>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
-        runCatching { repo.api().driveFolder(PROJECTS).propertyEntries.filter { it.folder } }.onSuccess { folders = it }.onFailure { error = it.message }
+        runCatching { repo.driveFolder(PROJECTS).propertyEntries.filter { it.folder } }.onSuccess { folders = it }.onFailure { error = it.message }
     }
     LaunchedEffect(FilesNav.changes) { loadQuick(repo) }
     open?.let { (path, name) ->
@@ -222,7 +224,7 @@ fun FilesScreen(pane: Int = 0) {
 
 /** Starred and recent, as the server has them now. */
 private suspend fun loadQuick(repo: Repo) {
-    runCatching { repo.api().driveStarred() }.onSuccess { FilesNav.starred.clear(); FilesNav.starred.addAll(it) }
+    runCatching { repo.driveStarred() }.onSuccess { FilesNav.starred.clear(); FilesNav.starred.addAll(it) }
     runCatching { repo.api().driveRecent(8) }.onSuccess { FilesNav.recent.clear(); FilesNav.recent.addAll(it) }
 }
 
@@ -294,6 +296,8 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
     var selected by remember(root) { mutableStateOf(FilesNav.previews[navKey]) }
     var entries by remember { mutableStateOf<List<DriveEntry>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    /** Listed as last seen here: no connection. */
+    var offline by remember { mutableStateOf(false) }
     var naming by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf<String?>(null) }
     val expanded = remember(navKey) { FilesNav.expanded.getOrPut(navKey) { androidx.compose.runtime.mutableStateMapOf() } }
@@ -301,18 +305,12 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
     LaunchedEffect(path, FilesNav.changes) {
         FilesNav.folders[navKey] = path
         error = null
-        runCatching { repo.api().driveFolder(path).propertyEntries }.onSuccess { entries = it }.onFailure { error = it.message }
+        runCatching { repo.driveListing(path) }.onSuccess { (l, kept) -> entries = l.propertyEntries; offline = kept }.onFailure { error = it.message }
     }
     // The file being previewed, as it is now (it may have been written on since).
     LaunchedEffect(FilesNav.changes) {
         val s = selected ?: return@LaunchedEffect
-        runCatching { repo.api().driveFolder(parentOf(s.path)).propertyEntries.find { it.path == s.path } }
-            .onSuccess { fresh -> if (fresh != null && selected?.path == fresh.path) selected = fresh }
-    }
-    // The file being previewed, as it is now (it may have been written on since).
-    LaunchedEffect(FilesNav.changes) {
-        val s = selected ?: return@LaunchedEffect
-        runCatching { repo.api().driveFolder(parentOf(s.path)).propertyEntries.find { it.path == s.path } }
+        runCatching { repo.driveFolder(parentOf(s.path)).propertyEntries.find { it.path == s.path } }
             .onSuccess { fresh -> if (fresh != null && selected?.path == fresh.path) selected = fresh }
     }
     LaunchedEffect(selected) {
@@ -387,6 +385,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                     }
                 }
                 error?.let { Text("Couldn't reach the drive: $it", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
+                if (offline) Text("Offline: as last seen on this device. Files marked with a pin open; starred folders are kept whole.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (locked) Text("From PLMS, kept as it is there: drag a copy out to write on it.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 val list = entries.orEmpty()
                 if (entries != null && list.isEmpty()) Text("Nothing here yet. Upload files, or save notebooks here.", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -407,6 +406,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                                     Spacer(Modifier.height(6.dp))
                                     Text(e.name, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, fontSize = 13.sp)
                                 }
+                                KeptMark(e, Modifier.align(Alignment.TopEnd).padding(6.dp))
                                 EntryMenu(e, actions, FOLDER)
                             }
                         }
@@ -419,6 +419,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                                     leadingContent = { Icon(iconOf(e), null, tint = if (e.folder) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) },
                                     headlineContent = { Text(e.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                     supportingContent = { Text(listOfNotNull(if (e.folder) null else size(e.propertySize), e.modified?.let(::date)).joinToString(" · ")) },
+                                    trailingContent = { KeptMark(e) },
                                     modifier = Modifier
                                         .then(if (e.folder) Modifier.driveDropTarget(DriveProvider.readOnly(e.path)) { drop(e.path, it) } else Modifier)
                                         .driveGestures({ actions.open(e) }, { actions.menu(e, FOLDER) }) { copy -> drag(e, copy) },
@@ -439,7 +440,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                         creating = false
                         scope.launch {
                             runCatching { newNote(repo, path) }
-                                .onSuccess { p -> FilesNav.changes++; selected = repo.api().driveFolder(path).propertyEntries.find { it.path == p } }
+                                .onSuccess { p -> FilesNav.changes++; selected = repo.driveFolder(path).propertyEntries.find { it.path == p } }
                                 .onFailure { Toast.makeText(context, "Couldn't make the note: ${it.message}", Toast.LENGTH_LONG).show() }
                         }
                     }, leadingIcon = { Icon(Icons.Filled.Description, null) })
@@ -514,6 +515,17 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
 }
 
 /** The folder a drive path is in. */
+/** Whether [e] is on this device, to open offline: a file kept here, or a folder kept whole (starred, or in one that is). */
+@Composable
+private fun KeptMark(e: DriveEntry, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val kept = remember(e.path, e.etag, FilesNav.changes, FilesNav.starred.size) {
+        if (e.folder) FilesNav.starred.any { it.endsWith("/") && e.path.startsWith(it) }
+        else LocalCopies.file(context, e.path).exists() || com.syeyoung.assistant.notes.LiveCache(context, e.path).has()
+    }
+    if (kept) Icon(Icons.Filled.OfflinePin, "On this device", modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+}
+
 internal fun parentOf(path: String) = path.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
 
 /** Project folders (and Projects/ itself) follow the projects: not renamed, moved or deleted from here. */
@@ -581,6 +593,8 @@ class EntryActions(
     fun star(e: DriveEntry, on: Boolean) = run(null) {
         repo.api().driveChangeState(e.path, kotlinx.serialization.json.buildJsonObject { put("starred", kotlinx.serialization.json.JsonPrimitive(on)) })
         loadQuick(repo)
+        // Starred: kept on this device (offline too).
+        if (on) com.syeyoung.assistant.drive.OfflineFolders.now(context)
     }
 
     fun rename(e: DriveEntry, name: String) = run(null) { repo.api().driveMove(e.path, parentOf(e.path) + name + if (e.folder) "/" else "") }
@@ -701,7 +715,7 @@ private fun FolderTree(
     val open = listOf(root) + expanded.filterValues { it }.keys.filter { it.startsWith(root) }.sorted()
     for (folder in open) androidx.compose.runtime.key(folder) {
         LaunchedEffect(folder, FilesNav.changes) {
-            runCatching { repo.api().driveFolder(folder).propertyEntries }.onSuccess { children[folder] = it }
+            runCatching { repo.driveFolder(folder).propertyEntries }.onSuccess { children[folder] = it }
         }
     }
     val rows = buildList {

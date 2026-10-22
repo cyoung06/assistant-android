@@ -85,6 +85,48 @@ class Repo private constructor(private val context: Context) {
         return Api(endpoint).also { cachedApi = endpoint to it }
     }
 
+    // ---- the drive as last listed here: browsed offline as it was ----
+
+    private val listings = File(context.filesDir, "listings").apply { mkdirs() }
+    private fun listingFile(key: String) = File(listings, java.security.MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).joinToString("") { "%02x".format(it) } + ".json")
+
+    /**
+     * [path]'s listing, and whether it's as last listed here (no connection) rather than the drive's
+     * now. Kept each time it's listed; gone with the folder. Fails offline if it was never listed here.
+     */
+    suspend fun driveListing(path: String): Pair<com.syeyoung.assistant.api.models.DriveFolder, Boolean> {
+        val f = listingFile("folder:$path")
+        val serializer = com.syeyoung.assistant.api.models.DriveFolder.serializer()
+        return try {
+            api().driveFolder(path).also { l -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { f.writeText(AppJson.encodeToString(serializer, l)) } } } to false
+        } catch (e: ApiException) {
+            if (e.status == 404) f.delete()
+            throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val kept = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { AppJson.decodeFromString(serializer, f.readText()) }.getOrNull() }
+            (kept ?: throw e) to true
+        }
+    }
+
+    /** [path]'s listing (see [driveListing]). */
+    suspend fun driveFolder(path: String) = driveListing(path).first
+
+    /** What's starred in the drive; offline, as last known here. */
+    suspend fun driveStarred(): List<String> {
+        val f = listingFile("starred")
+        return try {
+            api().driveStarred().also { l -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { f.writeText(l.joinToString("\n")) } } }
+        } catch (e: ApiException) {
+            throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { f.readText().lines().filter { it.isNotEmpty() } }.getOrNull() } ?: throw e
+        }
+    }
+
     suspend fun refresh(): Boolean = refreshLock.withLock {
         _state.update { it.copy(loading = true) }
         return try {

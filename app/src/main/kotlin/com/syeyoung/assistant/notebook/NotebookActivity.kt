@@ -225,7 +225,24 @@ class NotebookActivity : ComponentActivity() {
             }
         }
 
-        if (livePath != null) return openLive(livePath)
+        if (livePath != null) {
+            // Kept here only as a file (in a starred folder, never opened live): with no connection,
+            // written on as that file, which goes to the drive once there is one.
+            if (!com.syeyoung.assistant.notes.LiveCache(this, livePath).has() && com.syeyoung.assistant.drive.LocalCopies.file(this, livePath).exists()) {
+                lifecycleScope.launch {
+                    ui.status = "Opening…"
+                    val reachable = runCatching { com.syeyoung.assistant.data.Repo.get(this@NotebookActivity).api().syncEpoch(livePath) }.isSuccess
+                    if (reachable) openLive(livePath) else openFile(uri)
+                }
+                return
+            }
+            return openLive(livePath)
+        }
+        openFile(uri)
+    }
+
+    /** Opens the PDF at [uri] as a file of its own (written on in place). */
+    private fun openFile(uri: android.net.Uri) {
         lifecycleScope.launch {
             ui.status = "Opening…"
             runCatching {

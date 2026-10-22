@@ -65,7 +65,7 @@ class DriveProvider : DocumentsProvider() {
     /** Each project's folder is a storage location of its own (and No project, for things that belong to none). */
     override fun queryRoots(projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: ROOT_COLUMNS)
-        val projects = runCatching { net { repo.api().driveFolder(PROJECTS) } }.getOrNull()?.propertyEntries?.filter { it.folder }.orEmpty()
+        val projects = runCatching { net { repo.driveFolder(PROJECTS) } }.getOrNull()?.propertyEntries?.filter { it.folder }.orEmpty()
         // Projects in the app's order (active ones first), No project last.
         val order = repo.state.value.data.projects.map { it.name }
         projects.sortedWith(compareBy({ it.name == NO_PROJECT }, { order.indexOf(it.name).let { i -> if (i < 0) Int.MAX_VALUE else i } }, { it.name })).forEach { p ->
@@ -91,14 +91,14 @@ class DriveProvider : DocumentsProvider() {
     /** An entry not seen in a listing yet: from its parent folder's. */
     private fun lookUp(path: String): DriveEntry? {
         val parent = path.trimEnd('/').substringBeforeLast('/', "").let { if (it.isEmpty()) "" else "$it/" }
-        return runCatching { net { repo.api().driveFolder(parent) } }.getOrNull()?.propertyEntries?.onEach { known[it.path] = it }?.find { it.path == path }
+        return runCatching { net { repo.driveFolder(parent) } }.getOrNull()?.propertyEntries?.onEach { known[it.path] = it }?.find { it.path == path }
     }
 
     override fun queryChildDocuments(parentDocumentId: String, projection: Array<out String>?, sortOrder: String?): Cursor {
         val cursor = MatrixCursor(projection ?: DOC_COLUMNS)
         val folder = if (parentDocumentId == TOP) "" else parentDocumentId
         try {
-            net { repo.api().driveFolder(folder) }.propertyEntries.forEach { known[it.path] = it; row(cursor, it) }
+            net { repo.driveFolder(folder) }.propertyEntries.forEach { known[it.path] = it; row(cursor, it) }
         } catch (e: Exception) {
             Log.w("DriveProvider", "listing $folder: $e")
             cursor.extras = android.os.Bundle().apply { putString(DocumentsContract.EXTRA_ERROR, "Couldn't reach the drive: ${e.message}") }

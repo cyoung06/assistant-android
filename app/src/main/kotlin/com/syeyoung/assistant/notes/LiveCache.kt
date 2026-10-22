@@ -30,6 +30,9 @@ class LiveCache(context: Context, private val path: String) {
         return now == kept
     }
 
+    /** Whether anything's kept. */
+    fun has() = file.isFile && file.length() > 0
+
     /** The kept state; null if there's none (or it can't be read). */
     fun load(): ByteArray? = runCatching { file.takeIf { it.isFile && it.length() > 0 }?.readBytes() }.getOrNull()
 
@@ -48,7 +51,10 @@ class LiveCache(context: Context, private val path: String) {
         epoch = null
     }
 
-    private companion object {
-        fun sha256(s: String) = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
+    companion object {
+        /** The live documents open on a screen here (kept by them as they go; nothing else should write theirs meanwhile). */
+        val inUse: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+        private fun sha256(s: String) = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 }
