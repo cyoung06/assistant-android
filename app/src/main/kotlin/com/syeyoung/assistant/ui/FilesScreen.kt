@@ -381,6 +381,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                     }
                     if (withCrumbs) {
                         IconButton({ FilesNav.changes++ }) { Icon(Icons.Filled.Refresh, "Refresh") }
+                        IconButton({ actions.exporting = path to null }) { Icon(Icons.Filled.PictureAsPdf, "Export as PDF") }
                         IconButton({ FilesNav.trash = true }) { Icon(Icons.Filled.Delete, "Trash") }
                         SplitButton()
                     }
@@ -467,6 +468,7 @@ fun DriveBrowser(root: String, rootName: String, onExit: (() -> Unit)?, pane: In
                         onExit?.let { IconButton(it) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "All storage") } }
                         Text(rootName, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         IconButton({ FilesNav.changes++ }) { Icon(Icons.Filled.Refresh, "Refresh") }
+                        IconButton({ actions.exporting = path to null }) { Icon(Icons.Filled.PictureAsPdf, "Export as PDF") }
                         IconButton({ FilesNav.trash = true }) { Icon(Icons.Filled.Delete, "Trash") }
                         SplitButton()
                     }
@@ -548,6 +550,8 @@ class EntryActions(
     /** Whose menu is open, and where (the same entry shows in the tree and in its folder: the menu drops from the one pressed). */
     var menuFor by mutableStateOf<Pair<String, String>?>(null)
     var renaming by mutableStateOf<DriveEntry?>(null)
+    /** The export dialog: for this folder, starting with that file. */
+    var exporting by mutableStateOf<Pair<String, String?>?>(null)
     var saving: DriveEntry? = null
 
     fun menu(e: DriveEntry, where: String) { menuFor = e.path to where }
@@ -635,6 +639,7 @@ class EntryActions(
 
     @Composable
     fun Dialogs() {
+        exporting?.let { (folder, first) -> ExportDialog(folder, first, { exporting = null }) { FilesNav.changes++ } }
         renaming?.let { e ->
             NameDialog("Rename", e.name) { name ->
                 renaming = null
@@ -688,6 +693,9 @@ private fun EntryMenu(e: DriveEntry, actions: EntryActions, where: String) {
         androidx.compose.material3.HorizontalDivider()
         val isStarred = e.path in FilesNav.starred
         Item(if (isStarred) "Unstar" else "Star", if (isStarred) Icons.Filled.Star else Icons.Filled.StarBorder) { actions.star(e, !isStarred) }
+        // One PDF to hand in, of this folder's (or the file's folder's) notebooks, PDFs and notes.
+        if (e.folder || pdf || com.syeyoung.assistant.notes.NoteEditor.isNote(e.name))
+            Item("Export as PDF…", Icons.Filled.PictureAsPdf) { actions.exporting = if (e.folder) e.path to null else parentOf(e.path) to e.path }
         Item("Copy", Icons.Filled.ContentCopy) { actions.copy(e) }
         if (changeable) Item("Cut", Icons.Filled.ContentCut) { actions.cut(e) }
         FilesNav.clip?.let { c -> if (e.folder && !readOnly) Item("Paste “${c.entry.name}” here", Icons.Filled.ContentPaste) { actions.paste(e.path) } }

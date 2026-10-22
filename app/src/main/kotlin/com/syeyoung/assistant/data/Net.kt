@@ -20,6 +20,7 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.plugins.timeout
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.forms.formData
 import io.ktor.client.request.forms.submitFormWithBinaryData
@@ -275,6 +276,20 @@ class Api(endpoint: Endpoint) {
 
     /** Deletes a drive file or folder: to the trash (kept 30 days, see [driveTrash]). */
     suspend fun driveDelete(path: String) = send { http.delete("$base/api/v1/drive/file?path=${drivePath(path)}") }.let { }
+
+    // ---- exports: notebooks, PDFs and notes as one PDF, to hand in ----
+
+    /** [request]'s files (items: path, pages from 0; cover) as one PDF, into [to]. */
+    suspend fun driveExport(request: JsonObject, to: java.io.File) {
+        val r = send { http.post("$base/api/v1/drive/export") { contentType(ContentType.Application.Json); setBody(request); timeout { requestTimeoutMillis = 300_000 } } }
+        r.bodyAsChannel().toInputStream().use { input -> to.outputStream().use { input.copyTo(it) } }
+    }
+
+    /** [request]'s files as one PDF, saved in the drive at [to] (numbered if taken); where it went. */
+    suspend fun driveExportSave(request: JsonObject, to: String): String {
+        val r = send { http.post("$base/api/v1/drive/export/save?to=${drivePath(to)}") { contentType(ContentType.Application.Json); setBody(request); timeout { requestTimeoutMillis = 300_000 } } }
+        return AppJson.parseToJsonElement(r.bodyAsText()).jsonObject["path"]!!.jsonPrimitive.content
+    }
 
     // ---- course PDFs written on in a copy ----
 
