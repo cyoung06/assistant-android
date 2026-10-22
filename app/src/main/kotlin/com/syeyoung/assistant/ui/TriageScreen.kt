@@ -72,7 +72,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
 
-private val SOURCES = mapOf("share" to "Shared", "capture" to "Captured", "addin" to "From Outlook", "mail" to "Mail", "chatgpt" to "From ChatGPT")
+private val SOURCES = mapOf("share" to "Shared", "capture" to "Captured", "addin" to "From Outlook", "mail" to "Mail", "chatgpt" to "From ChatGPT", "plms" to "PLMS")
 
 /** Waiting suggestions plus inputs the model hasn't read yet: the drawer's count. */
 fun triageCount(inputs: List<TriageInputResponse>) = inputs.sumOf { i -> if (i.status == "pending") 1 else i.items.count { it.status == "pending" } }
